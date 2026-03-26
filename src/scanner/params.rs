@@ -217,33 +217,21 @@ fn java_type_to_json_inner(
         return java_type_to_json_inner(inner, depth + 1, catalog);
     }
 
-    if let Some(inner) = strip_wrapped_generic(&t, "List<") {
-        let inner = java_type_to_json_inner(inner, depth + 1, catalog)?;
-        return Some(serde_json::Value::Array(vec![inner]));
-    }
-    if let Some(inner) = strip_wrapped_generic(&t, "java.util.List<") {
-        let inner = java_type_to_json_inner(inner, depth + 1, catalog)?;
-        return Some(serde_json::Value::Array(vec![inner]));
+    if strip_wrapped_generic(&t, "List<").is_some() || strip_wrapped_generic(&t, "java.util.List<").is_some()
+    {
+        return Some(serde_json::Value::Array(vec![]));
     }
 
-    if let Some(inner) = strip_wrapped_generic(&t, "Set<") {
-        let inner = java_type_to_json_inner(inner, depth + 1, catalog)?;
-        return Some(serde_json::Value::Array(vec![inner]));
+    if strip_wrapped_generic(&t, "Set<").is_some() {
+        return Some(serde_json::Value::Array(vec![]));
     }
 
-    if let Some(rest) = t.strip_prefix("Map<").or_else(|| t.strip_prefix("java.util.Map<")) {
-        let inner = strip_matching_angle(rest)?;
-        let (_k, v) = split_top_level_comma(inner)?;
-        let v = java_type_to_json_inner(v.trim(), depth + 1, catalog)?;
-        let mut m = serde_json::Map::new();
-        m.insert("key".to_string(), v);
-        return Some(serde_json::Value::Object(m));
+    if t.strip_prefix("Map<").is_some() || t.strip_prefix("java.util.Map<").is_some() {
+        return Some(serde_json::Value::Object(serde_json::Map::new()));
     }
 
     if t.ends_with("[]") {
-        let elem = t[..t.len() - 2].trim();
-        let inner = java_type_to_json_inner(elem, depth + 1, catalog)?;
-        return Some(serde_json::Value::Array(vec![inner]));
+        return Some(serde_json::Value::Array(vec![]));
     }
 
     let simple = t.rsplit('.').next().unwrap_or(&t);
@@ -251,12 +239,11 @@ fn java_type_to_json_inner(
 
     Some(match simple_base {
         "String" | "CharSequence" | "UUID" | "LocalDate" | "LocalDateTime" | "Instant"
-        | "ZonedDateTime" | "OffsetDateTime" => serde_json::json!(""),
-        "Integer" | "int" | "Long" | "long" | "Short" | "short" | "Byte" | "byte" => {
-            serde_json::json!(0)
-        }
-        "Double" | "double" | "Float" | "float" => serde_json::json!(0.0),
-        "Boolean" | "boolean" => serde_json::json!(false),
+        | "ZonedDateTime" | "OffsetDateTime" | "char" | "Character" => serde_json::Value::Null,
+        "Integer" | "int" | "Long" | "long" | "Short" | "short" | "Byte" | "byte"
+        | "BigInteger" | "BigDecimal" => serde_json::Value::Null,
+        "Double" | "double" | "Float" | "float" => serde_json::Value::Null,
+        "Boolean" | "boolean" => serde_json::Value::Null,
         "void" | "Void" => serde_json::Value::Null,
         name if name.chars().next().is_some_and(|c| c.is_uppercase()) => {
             if let Some(fields) = catalog.get(name) {
@@ -297,19 +284,6 @@ fn strip_matching_angle(s: &str) -> Option<&str> {
     None
 }
 
-fn split_top_level_comma(s: &str) -> Option<(&str, &str)> {
-    let mut depth = 0i32;
-    for (i, c) in s.char_indices() {
-        match c {
-            '<' => depth += 1,
-            '>' => depth -= 1,
-            ',' if depth == 0 => return Some((s[..i].trim(), s[i + 1..].trim())),
-            _ => {}
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,12 +293,15 @@ mod tests {
         let empty = FieldCatalog::new();
         assert_eq!(
             java_type_to_json_template("String", &empty),
-            serde_json::json!("")
+            serde_json::Value::Null
         );
-        assert_eq!(java_type_to_json_template("int", &empty), serde_json::json!(0));
+        assert_eq!(
+            java_type_to_json_template("int", &empty),
+            serde_json::Value::Null
+        );
         assert_eq!(
             java_type_to_json_template("boolean", &empty),
-            serde_json::json!(false)
+            serde_json::Value::Null
         );
     }
 
@@ -333,7 +310,7 @@ mod tests {
         let empty = FieldCatalog::new();
         assert_eq!(
             java_type_to_json_template("List<String>", &empty),
-            serde_json::json!([""])
+            serde_json::json!([])
         );
         assert_eq!(
             java_type_to_json_template("Optional<UserDto>", &empty),
@@ -349,6 +326,6 @@ mod tests {
             vec![("id".into(), "long".into()), ("name".into(), "String".into())],
         );
         let v = java_type_to_json_template("UserDto", &cat);
-        assert_eq!(v, serde_json::json!({"id": 0, "name": ""}));
+        assert_eq!(v, serde_json::json!({"id": null, "name": null}));
     }
 }

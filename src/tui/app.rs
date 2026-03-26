@@ -143,6 +143,8 @@ pub struct App {
     pub current_api: Option<LocalApi>,
     pub path_vals: HashMap<String, String>,
     pub query_vals: HashMap<String, String>,
+    /// 手工附加的 Query（非扫描）；参与拼接 URL；切换接口时清空。
+    pub extra_query_params: Vec<(String, String)>,
     /// 详情 / `e` 表单：按当前方法（GET/POST…）与是否有 Body 预设的请求头，可改值（顺序即发送时相对顺序，不含全局 `a`）。
     pub method_detail_headers: Vec<(String, String)>,
     /// 扫描到的 `@RequestHeader`：仅参与发送合并，不在详情里展示编辑。
@@ -186,8 +188,10 @@ pub struct App {
     pub source_cache_loading: bool,
     /// Postman 式请求表单：一行一类参数 + Body，集中预览与编辑。
     pub request_editor_open: bool,
-    /// 表单内扁平焦点：先全部 Path，再 Query，最后一行 Body（若有）。
+    /// 表单内扁平焦点：先全部 Path，再扫描 Query，再附加 Query，再预设头，Body（若有）。
     pub request_editor_focus: usize,
+    /// 焦点在「附加 Query」行时：`true` 编辑参数名，`false` 编辑值。
+    pub request_editor_extra_kv: bool,
     /// 主界面当前焦点区块（1–5 / 鼠标切换）。
     pub main_panel: MainPanel,
     /// 最近一次绘制时的主界面布局（供鼠标命中）。
@@ -245,6 +249,7 @@ impl App {
             current_api: None,
             path_vals: HashMap::new(),
             query_vals: HashMap::new(),
+            extra_query_params: Vec::new(),
             method_detail_headers: Vec::new(),
             header_vals: HashMap::new(),
             body_draft: String::new(),
@@ -275,6 +280,7 @@ impl App {
             source_cache_loading: true,
             request_editor_open: false,
             request_editor_focus: 0,
+            request_editor_extra_kv: false,
             main_panel: MainPanel::default(),
             last_main_layout: None,
             detail_scroll: 0,
@@ -1087,6 +1093,7 @@ impl App {
                 p.default_value.clone().unwrap_or_default(),
             );
         }
+        self.extra_query_params.clear();
         self.method_detail_headers =
             default_method_detail_headers(&api.http_method, api.body_binding.is_some());
         self.header_vals.clear();
@@ -1120,7 +1127,74 @@ impl App {
         };
         api.path_params.len()
             + api.query_params.len()
+            + self.extra_query_params.len()
             + self.method_detail_headers.len()
+    }
+
+    /// 发送与预览 URL 使用的 Query：扫描默认值 + 手工附加（同名时以后者为准）。
+    pub fn merged_query_for_url(&self) -> HashMap<String, String> {
+        let mut m = self.query_vals.clone();
+        for (k, v) in &self.extra_query_params {
+            let kt = k.trim();
+            if kt.is_empty() {
+                continue;
+            }
+            m.insert(kt.to_string(), v.clone());
+        }
+        m
+    }
+
+    pub fn request_editor_on_extra_query_row(&self) -> bool {
+        let Some(api) = &self.current_api else {
+            return false;
+        };
+        let f = self.request_editor_focus;
+        let pn = api.path_params.len();
+        let qn = api.query_params.len();
+        let en = self.extra_query_params.len();
+        en > 0 && f >= pn + qn && f < pn + qn + en
+    }
+
+    /// 「+」：在扫描 Query 之后追加一行手工 Query（先编辑参数名，Tab 切到值）。
+    pub fn add_extra_query_param(&mut self) {
+        self.save_request_editor_row();
+        self.extra_query_params.push((String::new(), String::new()));
+        let Some(api) = &self.current_api else {
+            return;
+        };
+        let pn = api.path_params.len();
+        let qn = api.query_params.len();
+        let en = self.extra_query_params.len();
+        self.request_editor_focus = pn + qn + en - 1;
+        self.request_editor_extra_kv = true;
+        self.load_request_editor_row();
+    }
+
+    /// 焦点在附加 Query 行时按 `d`：删除该行。成功返回 `true`。
+    pub fn delete_extra_query_row_at_focus(&mut self) -> bool {
+        if !self.request_editor_on_extra_query_row() {
+            return false;
+        }
+        self.save_request_editor_row();
+        let Some(api) = self.current_api.as_ref() else {
+            return false;
+        };
+        let f = self.request_editor_focus;
+        let pn = api.path_params.len();
+        let qn = api.query_params.len();
+        let idx = f - pn - qn;
+        if idx >= self.extra_query_params.len() {
+            return false;
+        }
+        self.extra_query_params.remove(idx);
+        self.request_editor_extra_kv = false;
+        let n = self.request_sheet_row_count();
+        if n == 0 {
+            return true;
+        }
+        self.request_editor_focus = self.request_editor_focus.min(n - 1);
+        self.load_request_editor_row();
+        true
     }
 
     pub fn move_param_focus(&mut self, delta: isize) {
@@ -1149,8 +1223,9 @@ impl App {
         };
         let pn = api.path_params.len();
         let qn = api.query_params.len();
+        let en = self.extra_query_params.len();
         let hn = self.method_detail_headers.len();
-        api.body_binding.is_some() && self.request_editor_focus >= pn + qn + hn
+        api.body_binding.is_some() && self.request_editor_focus >= pn + qn + en + hn
     }
 
     pub fn save_request_editor_row(&mut self) {
@@ -1160,6 +1235,7 @@ impl App {
         let f = self.request_editor_focus;
         let pn = api.path_params.len();
         let qn = api.query_params.len();
+        let en = self.extra_query_params.len();
         let hn = self.method_detail_headers.len();
         if f < pn {
             let name = api.path_params[f].name.clone();
@@ -1167,8 +1243,17 @@ impl App {
         } else if f < pn + qn {
             let name = api.query_params[f - pn].name.clone();
             self.query_vals.insert(name, self.param_edit_buf.clone());
-        } else if f < pn + qn + hn {
+        } else if f < pn + qn + en {
             let row = f - pn - qn;
+            if let Some(slot) = self.extra_query_params.get_mut(row) {
+                if self.request_editor_extra_kv {
+                    slot.0 = self.param_edit_buf.clone();
+                } else {
+                    slot.1 = self.param_edit_buf.clone();
+                }
+            }
+        } else if f < pn + qn + en + hn {
+            let row = f - pn - qn - en;
             if let Some(slot) = self.method_detail_headers.get_mut(row) {
                 slot.1 = self.param_edit_buf.clone();
             }
@@ -1184,6 +1269,7 @@ impl App {
         let f = self.request_editor_focus;
         let pn = api.path_params.len();
         let qn = api.query_params.len();
+        let en = self.extra_query_params.len();
         let hn = self.method_detail_headers.len();
         if f < pn {
             let name = &api.path_params[f].name;
@@ -1193,8 +1279,17 @@ impl App {
             let name = &api.query_params[f - pn].name;
             self.param_edit_buf = self.query_vals.get(name).cloned().unwrap_or_default();
             self.param_cursor_char = self.param_edit_buf.chars().count();
-        } else if f < pn + qn + hn {
+        } else if f < pn + qn + en {
             let row = f - pn - qn;
+            let (ref k, ref v) = self.extra_query_params[row];
+            self.param_edit_buf = if self.request_editor_extra_kv {
+                k.clone()
+            } else {
+                v.clone()
+            };
+            self.param_cursor_char = self.param_edit_buf.chars().count();
+        } else if f < pn + qn + en + hn {
+            let row = f - pn - qn - en;
             self.param_edit_buf = self
                 .method_detail_headers
                 .get(row)
@@ -1319,6 +1414,7 @@ impl App {
         };
         let mut n = api.path_params.len()
             + api.query_params.len()
+            + self.extra_query_params.len()
             + self.method_detail_headers.len();
         if api.body_binding.is_some() {
             n += 1;
@@ -1332,15 +1428,23 @@ impl App {
             self.request_editor_open = false;
             return Ok(());
         }
-        let Some(_api) = &self.current_api else {
+        let Some(api) = self.current_api.as_ref() else {
             return Err("请先选择接口");
         };
         let n = self.request_sheet_row_count();
         if n == 0 {
-            return Err("当前接口无可编辑项");
+            self.extra_query_params.push((String::new(), String::new()));
+            self.request_editor_open = true;
+            let pn = api.path_params.len();
+            let qn = api.query_params.len();
+            self.request_editor_focus = pn + qn;
+            self.request_editor_extra_kv = true;
+            self.load_request_editor_row();
+            return Ok(());
         }
         self.request_editor_open = true;
         self.request_editor_focus = 0;
+        self.request_editor_extra_kv = false;
         self.load_request_editor_row();
         Ok(())
     }
@@ -1351,6 +1455,7 @@ impl App {
             return;
         }
         self.save_request_editor_row();
+        self.request_editor_extra_kv = false;
         let n_i = n as isize;
         let cur = self.request_editor_focus as isize;
         self.request_editor_focus = ((cur + delta).rem_euclid(n_i)) as usize;
@@ -1362,7 +1467,7 @@ impl App {
             return String::new();
         };
         format!(
-            "{}  {}\n{}\n直接输入下方编辑区 · Esc 保存退出 · Tab 切换字段 · Path/Query/方法预设头 内 ←/→ · Body 内 ↑/↓/←/→ 移动光标",
+            "{}  {}\n{}\n直接输入下方编辑区 · Esc 保存退出 · Tab 切换字段（附加 Query 行内 Tab 切换参数名/值）· + 增加附加 Query · 附加行上 d 删除 · Path/Query/方法预设头 内 ←/→ · Body 内 ↑/↓/←/→ 移动光标",
             api.http_method,
             api.path,
             api.name
@@ -1382,6 +1487,7 @@ impl App {
         let f = self.request_editor_focus;
         let pn = api.path_params.len();
         let qn = api.query_params.len();
+        let en = self.extra_query_params.len();
         let hn = self.method_detail_headers.len();
         if f < pn {
             let p = &api.path_params[f];
@@ -1397,8 +1503,26 @@ impl App {
                 p.name, p.java_type
             );
         }
-        if f < pn + qn + hn {
-            let (hname, _) = &self.method_detail_headers[f - pn - qn];
+        if f < pn + qn + en {
+            let j = f - pn - qn;
+            let (ref kn, _) = self.extra_query_params[j];
+            let part = if self.request_editor_extra_kv {
+                "参数名"
+            } else {
+                "值"
+            };
+            let show = if kn.is_empty() {
+                "（新参数）"
+            } else {
+                kn.as_str()
+            };
+            return format!(
+                "附加 Query · `{}` — 编辑下方{part}（Tab 切换名/值）    [{i}/{total}]",
+                show
+            );
+        }
+        if f < pn + qn + en + hn {
+            let (hname, _) = &self.method_detail_headers[f - pn - qn - en];
             return format!(
                 "当前 Header ·  {} （按方法预设） = 编辑下方值    [{i}/{total}]",
                 hname
@@ -1488,14 +1612,15 @@ impl App {
         }
         s.push_str(&format!("{}:{}\n", api.source_file, api.line));
         s.push_str(
-            "按 e 修改请求参数（Path / Query / 方法预设请求头 / Body 同一窗口；Esc 保存退出，Tab 切换字段）\n\
+            "按 e 修改请求参数（Path / Query / 附加 Query / 方法预设请求头 / Body 同一窗口；Esc 保存退出；+ 增加附加 Query；附加行上 d 删除）\n\
 以下为按 HTTP 方法与是否带 Body 预设的头（如 Accept、Content-Type），非注解扫描；全局附加头按 a（先合并 a，再合并本区，最后 @RequestHeader 同名覆盖）\n\n",
         );
         let path_n = api.path_params.len();
         let mh = self.method_detail_headers.len();
-        let n_params = path_n + api.query_params.len() + mh;
+        let exn = self.extra_query_params.len();
+        let n_params = path_n + api.query_params.len() + exn + mh;
         if n_params > 0 {
-            s.push_str("[参数]  [ / ] 详情内切换 Path → Query → 请求头 · e 修改请求参数\n");
+            s.push_str("[参数]  [ / ] 详情内切换 Path → Query → 附加 Query → 请求头 · e 修改请求参数\n");
         }
         if !api.path_params.is_empty() {
             s.push_str("[Path]\n");
@@ -1522,13 +1647,27 @@ impl App {
             }
             s.push('\n');
         }
+        if !self.extra_query_params.is_empty() {
+            s.push_str("[附加 Query]  （手动追加，参与预览与发送；同名覆盖扫描 Query）\n");
+            for (k, (ek, ev)) in self.extra_query_params.iter().enumerate() {
+                let flat = path_n + api.query_params.len() + k;
+                let mark = if self.param_focus == Some(flat) { "▶" } else { " " };
+                let label = if ek.trim().is_empty() {
+                    "（空参数名不参与 URL）"
+                } else {
+                    ek.as_str()
+                };
+                s.push_str(&format!(" {}  {} = {:?}\n", mark, label, ev));
+            }
+            s.push('\n');
+        }
         if !self.method_detail_headers.is_empty() {
             s.push_str(&format!(
                 "[Header]  （按 {} 与是否带 Body 预设 Accept / Content-Type 等，可改）\n",
                 api.http_method
             ));
             for (k, (hname, hval)) in self.method_detail_headers.iter().enumerate() {
-                let flat = path_n + api.query_params.len() + k;
+                let flat = path_n + api.query_params.len() + exn + k;
                 let mark = if self.param_focus == Some(flat) { "▶" } else { " " };
                 s.push_str(&format!(" {}  {} = {:?}\n", mark, hname, hval));
             }
@@ -1563,7 +1702,7 @@ impl App {
             self.active_base_url(),
             &api.path,
             &self.path_vals,
-            &self.query_vals,
+            &self.merged_query_for_url(),
         );
         match preview {
             Ok(u) => s.push_str(&format!("\n预览 URL:\n{u}\n")),

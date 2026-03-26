@@ -444,7 +444,7 @@ mod tests {
         assert!(post.body.is_some());
         assert_eq!(
             post.body.as_ref().unwrap(),
-            &serde_json::json!({"text":""})
+            &serde_json::json!({"text": null})
         );
         assert_eq!(post.body_binding.as_ref().unwrap().name, "body");
         assert_eq!(post.body_binding.as_ref().unwrap().java_type, "EchoBody");
@@ -470,7 +470,7 @@ mod tests {
         assert!(post.body.is_some());
         assert_eq!(
             post.body.as_ref().unwrap(),
-            &serde_json::json!({ "title": "", "priority": 0 })
+            &serde_json::json!({ "title": null, "priority": null })
         );
         assert_eq!(post.body_binding.as_ref().unwrap().java_type, "MessageDto");
     }
@@ -492,7 +492,7 @@ mod tests {
         assert!(ensure_request_body_resolved(post, &cache, &root));
         assert_eq!(
             post.body.as_ref().unwrap(),
-            &serde_json::json!({ "title": "", "priority": 0 })
+            &serde_json::json!({ "title": null, "priority": null })
         );
     }
 
