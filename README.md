@@ -1,87 +1,94 @@
 # lazypost
 
-`lazypost` is a terminal-first API scanner and debugger for Spring MVC / Spring Boot projects.
+`lazypost` 是一个面向 Spring MVC / Spring Boot 项目的终端 API 扫描与调试工具。
 
-It statically scans Java source files, extracts controller routes and request parameters, and lets you inspect and invoke APIs from a TUI without starting the Java app for reflection-based metadata discovery.
+它直接静态扫描 `.java` 源码，提取 Controller、路由、参数和请求体草稿，然后在 TUI 里浏览接口、编辑请求并发送调试请求。不依赖运行中的 Java 应用，也不靠运行时反射拿接口元数据。
 
-## Features
+## 能力概览
 
-- Scan Spring MVC / Spring Boot controllers from `.java` source files
-- Extract HTTP method, path, path/query/header/body bindings, and endpoint descriptions
-- Generate request body drafts from DTO definitions
-- Browse APIs in a TUI and edit Params / Headers / Body independently
-- Send requests directly and inspect responses in folded JSON or raw-response popup mode
-- Persist per-project request drafts locally
+- 扫描 Spring MVC / Spring Boot 控制器与接口路由
+- 提取 Path / Query / Header / Cookie / RequestBody 信息
+- 从 DTO 推断 JSON body 草稿
+- 在 TUI 中按模块编辑 `Params / Headers / Body`
+- 直接发送请求并查看响应
+- 响应区支持折叠 JSON 视图和原始响应弹窗
+- 按项目持久化最近项目、域名、全局头、接口请求草稿
 
-## Install
+## 安装
 
 ### Homebrew
 
-Tap this repository directly, then install the formula:
+标准 tap 方式会使用独立仓库 `life2you/homebrew-lazypost4j`。
+
+仓库发布后，安装命令是：
 
 ```bash
-brew tap life2you/lazypost4J https://github.com/life2you/lazypost4J
-brew install life2you/lazypost4J/lazypost
+brew tap life2you/lazypost4j
+brew install life2you/lazypost4j/lazypost
 ```
 
 ### Cargo
+
+在当前仓库本地安装：
 
 ```bash
 cargo install --path .
 ```
 
-## Usage
+## 使用
 
-Launch the TUI:
+启动 TUI：
 
 ```bash
 lazypost /path/to/java-project
 ```
 
-Scan only:
+只做扫描：
 
 ```bash
 lazypost scan /path/to/java-project
 ```
 
-Scan and print JSON:
+以 JSON 输出扫描结果：
 
 ```bash
 lazypost scan /path/to/java-project --json
 ```
 
-## TUI shortcuts
+如果不传项目路径，程序会先进入目录选择页。
 
-- `1..7`: switch modules
-- `e`: edit current module (`2..6`)
-- `s`: send request
-- `v`: open raw response popup from response module
-- `f`: fuzzy search APIs
-- `?`: help
-- `q`: quit
+## TUI 快捷键
 
-## Local config
+- `1..7`：切换模块
+- `e`：编辑当前模块，适用于 `2..6`
+- `s`：发送当前接口请求
+- `v`：在 `[7] 响应` 模块打开原始响应弹窗
+- `f`：模糊搜索接口
+- `?`：打开帮助
+- `q`：退出
 
-`lazypost` stores local state in the system config directory:
+## 本地配置
+
+配置文件保存在系统配置目录：
 
 - macOS: `~/Library/Application Support/lazypost/config.json`
 - Linux: `~/.config/lazypost/config.json`
 
-Stored data includes:
+当前会保存：
 
-- recent projects
-- base URLs
-- global request headers
-- per-project API request drafts
+- 最近浏览项目
+- 域名列表
+- 全局请求头
+- 每个项目下的接口请求草稿
 
-## Development
+## 相关文档
 
-- Development notes: [DEVELOPMENT.md](./DEVELOPMENT.md)
-- Product notes: [api_tui_v_1_prd_and_srd.md](./api_tui_v_1_prd_and_srd.md)
+- 开发说明：[DEVELOPMENT.md](./DEVELOPMENT.md)
+- 产品 / 设计草稿：[api_tui_v_1_prd_and_srd.md](./api_tui_v_1_prd_and_srd.md)
 
 ## License
 
-Licensed under either of:
+本项目使用双许可证：
 
-- Apache License, Version 2.0, see [LICENSE-APACHE](./LICENSE-APACHE)
-- MIT license, see [LICENSE-MIT](./LICENSE-MIT)
+- Apache License 2.0，见 [LICENSE-APACHE](./LICENSE-APACHE)
+- MIT，见 [LICENSE-MIT](./LICENSE-MIT)
