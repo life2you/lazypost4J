@@ -17,10 +17,11 @@ It statically scans Java source files, extracts controller routes and request pa
 
 ### Homebrew
 
-Install directly from this repository's formula:
+Tap this repository directly, then install the formula:
 
 ```bash
-brew install https://raw.githubusercontent.com/life2you/lazypost4J/main/Formula/lazypost.rb
+brew tap life2you/lazypost4J https://github.com/life2you/lazypost4J
+brew install life2you/lazypost4J/lazypost
 ```
 
 ### Cargo
@@ -84,4 +85,3 @@ Licensed under either of:
 
 - Apache License, Version 2.0, see [LICENSE-APACHE](./LICENSE-APACHE)
 - MIT license, see [LICENSE-MIT](./LICENSE-MIT)
-
