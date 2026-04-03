@@ -11,10 +11,8 @@ pub use dir_picker::pick_project_dir;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use app::{
-    App, HostsEditKind, ListGroupMode, MainPanel, MainUiLayout, RequestHeaderEditKind,
-};
 use crate::scanner::{self, JavaSourceCache, ScanMode, ScanReport};
+use app::{App, DetailPane, HostsEditKind, MainPanel, MainUiLayout, RequestHeaderEditKind};
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
     Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -67,8 +65,7 @@ pub fn run(project: PathBuf) -> anyhow::Result<()> {
             match r {
                 Ok(h) => {
                     app.status_msg = format!("HTTP {} — {} ms", h.status, h.elapsed_ms);
-                    app.last_http = Some(h);
-                    app.response_scroll = 0;
+                    app.set_last_http_response(h);
                 }
                 Err(e) => app.status_msg = e,
             }
@@ -146,17 +143,18 @@ fn draw_hosts_panel(f: &mut Frame, app: &mut App) {
             .iter()
             .enumerate()
             .map(|(i, h)| {
-                let mark = if i == app.base_url_index { "▶ " } else { "  " };
+                let mark = if i == app.base_url_index {
+                    "▶ "
+                } else {
+                    "  "
+                };
                 let label = h.display_label();
                 let st = if i == app.base_url_index {
                     Style::default().fg(Color::Green)
                 } else {
                     Style::default()
                 };
-                let line1 = Line::from(vec![
-                    Span::styled(mark, st),
-                    Span::styled(label, st),
-                ]);
+                let line1 = Line::from(vec![Span::styled(mark, st), Span::styled(label, st)]);
                 if let Some(sub) = h.display_subtitle() {
                     ListItem::new(Text::from(vec![
                         line1,
@@ -172,7 +170,11 @@ fn draw_hosts_panel(f: &mut Frame, app: &mut App) {
             .collect();
         let list = List::new(items)
             .highlight_style(Style::default().bg(Color::DarkGray))
-            .block(Block::default().borders(Borders::ALL).title(" 已保存的域名 "));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" 已保存的域名 "),
+            );
         f.render_stateful_widget(list, chunks[1], &mut app.hosts_list_state);
     }
 
@@ -247,10 +249,7 @@ fn draw_headers_panel(f: &mut Frame, app: &mut App) {
                 } else {
                     Style::default()
                 };
-                let line1 = Line::from(vec![
-                    Span::styled(mark, st),
-                    Span::styled(label, st),
-                ]);
+                let line1 = Line::from(vec![Span::styled(mark, st), Span::styled(label, st)]);
                 if let Some(sub) = h.display_subtitle() {
                     ListItem::new(Text::from(vec![
                         line1,
@@ -266,7 +265,11 @@ fn draw_headers_panel(f: &mut Frame, app: &mut App) {
             .collect();
         let list = List::new(items)
             .highlight_style(Style::default().bg(Color::DarkGray))
-            .block(Block::default().borders(Borders::ALL).title(" 已保存的请求头 "));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" 已保存的请求头 "),
+            );
         f.render_stateful_widget(list, chunks[1], &mut app.headers_list_state);
     }
 
@@ -290,6 +293,11 @@ fn panel_border(focused: bool) -> Style {
 }
 
 fn draw_header_sidebar(f: &mut Frame, app: &App, area: Rect, focused: bool) {
+    let title = if focused {
+        " [3] 全局头 · e 编辑 "
+    } else {
+        " [3] 全局头 "
+    };
     let lines: Vec<Line> = if app.request_headers.is_empty() {
         vec![Line::from(Span::styled(
             "  (无)",
@@ -311,10 +319,7 @@ fn draw_header_sidebar(f: &mut Frame, app: &App, area: Rect, focused: bool) {
                 } else {
                     Style::default()
                 };
-                let l1 = Line::from(vec![
-                    Span::styled(mark, st),
-                    Span::styled(label, st),
-                ]);
+                let l1 = Line::from(vec![Span::styled(mark, st), Span::styled(label, st)]);
                 if let Some(sub) = h.display_subtitle() {
                     vec![
                         l1,
@@ -334,7 +339,7 @@ fn draw_header_sidebar(f: &mut Frame, app: &App, area: Rect, focused: bool) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(panel_border(focused))
-                .title(" [3] 全局头（a） "),
+                .title(title),
         )
         .scroll((app.header_sidebar_scroll, 0))
         .wrap(Wrap { trim: true });
@@ -342,22 +347,28 @@ fn draw_header_sidebar(f: &mut Frame, app: &App, area: Rect, focused: bool) {
 }
 
 fn draw_host_sidebar(f: &mut Frame, app: &App, area: Rect, focused: bool) {
+    let title = if focused {
+        " [2] 域名 · e 编辑 "
+    } else {
+        " [2] 域名 "
+    };
     let lines: Vec<Line> = app
         .hosts
         .iter()
         .enumerate()
         .flat_map(|(i, h)| {
-            let mark = if i == app.base_url_index { "▶ " } else { "  " };
+            let mark = if i == app.base_url_index {
+                "▶ "
+            } else {
+                "  "
+            };
             let label = h.display_label();
             let st = if i == app.base_url_index {
                 Style::default().fg(Color::Green)
             } else {
                 Style::default()
             };
-            let l1 = Line::from(vec![
-                Span::styled(mark, st),
-                Span::styled(label, st),
-            ]);
+            let l1 = Line::from(vec![Span::styled(mark, st), Span::styled(label, st)]);
             if let Some(sub) = h.display_subtitle() {
                 vec![
                     l1,
@@ -376,7 +387,7 @@ fn draw_host_sidebar(f: &mut Frame, app: &App, area: Rect, focused: bool) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(panel_border(focused))
-                .title(" [2] 域名（h） "),
+                .title(title),
         )
         .scroll((app.host_sidebar_scroll, 0))
         .wrap(Wrap { trim: true });
@@ -407,7 +418,7 @@ fn prepare_main_ui(root: Rect, app: &App) -> (MainUiLayout, Rect, String) {
         ])
         .split(top[0]);
 
-    let list_title = format!(" [1] 接口列表 (j/k){} ", app.list_title_suffix());
+    let list_title = format!(" [1] 接口列表{} ", app.list_title_suffix());
     let list_block = Block::default()
         .borders(Borders::ALL)
         .title(list_title.as_str());
@@ -415,25 +426,49 @@ fn prepare_main_ui(root: Rect, app: &App) -> (MainUiLayout, Rect, String) {
     let api_list_inner = list_block.inner(api_list);
 
     let host_sidebar = left_col[1];
-    let host_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" [2] 域名（h） ");
+    let host_block = Block::default().borders(Borders::ALL).title(" [2] 域名 ");
     let host_sidebar_inner = host_block.inner(host_sidebar);
 
     let header_sidebar = left_col[2];
-    let hdr_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" [3] 全局头（a） ");
+    let hdr_block = Block::default().borders(Borders::ALL).title(" [3] 全局头 ");
     let header_sidebar_inner = hdr_block.inner(header_sidebar);
 
     let detail = top[1];
-    let detail_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" [4] 详情 (s/e/预设头/a) ");
+    let detail_block = Block::default().borders(Borders::ALL).title(" 详情 ");
     let detail_inner = detail_block.inner(detail);
 
+    let detail_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(6), Constraint::Min(10)])
+        .split(detail_inner);
+    let detail_summary = detail_chunks[0];
+
+    let detail_panes = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(34),
+            Constraint::Percentage(28),
+            Constraint::Percentage(38),
+        ])
+        .split(detail_chunks[1]);
+    let detail_params = detail_panes[0];
+    let detail_params_inner = Block::default()
+        .borders(Borders::ALL)
+        .title(" [4] Params ")
+        .inner(detail_params);
+    let detail_headers = detail_panes[1];
+    let detail_headers_inner = Block::default()
+        .borders(Borders::ALL)
+        .title(" [5] Headers ")
+        .inner(detail_headers);
+    let detail_body = detail_panes[2];
+    let detail_body_inner = Block::default()
+        .borders(Borders::ALL)
+        .title(" [6] Body ")
+        .inner(detail_body);
+
     let response = main[1];
-    let resp_block = Block::default().borders(Borders::ALL).title(" [5] 响应 ");
+    let resp_block = Block::default().borders(Borders::ALL).title(" [7] 响应 ");
     let response_inner = resp_block.inner(response);
 
     let layout = MainUiLayout {
@@ -444,7 +479,13 @@ fn prepare_main_ui(root: Rect, app: &App) -> (MainUiLayout, Rect, String) {
         header_sidebar,
         header_sidebar_inner,
         detail,
-        detail_inner,
+        detail_summary,
+        detail_params,
+        detail_params_inner,
+        detail_headers,
+        detail_headers_inner,
+        detail_body,
+        detail_body_inner,
         response,
         response_inner,
     };
@@ -522,11 +563,10 @@ fn handle_mouse_wheel(app: &mut App, mouse: MouseEvent) {
     if layout.api_list.contains(p) {
         app.main_panel = MainPanel::ApiList;
         if scroll_up {
-            app.list_state.scroll_up_by(WHEEL_LINES);
+            app.move_sel(-1);
         } else {
-            app.list_state.scroll_down_by(WHEEL_LINES);
+            app.move_sel(1);
         }
-        app.sync_detail_from_selection();
         return;
     }
     if layout.host_sidebar.contains(p) {
@@ -545,33 +585,90 @@ fn handle_mouse_wheel(app: &mut App, mouse: MouseEvent) {
     }
     if layout.detail.contains(p) {
         app.main_panel = MainPanel::Detail;
-        let detail_txt = app.detail_lines();
-        let lines = detail_txt.lines().count() as u16;
-        let inner_h = layout.detail_inner.height.max(1);
-        paragraph_wheel(&mut app.detail_scroll, scroll_up, lines, inner_h);
+        if layout.detail_params.contains(p) {
+            app.detail_pane = DetailPane::Params;
+            let lines = app.detail_params_text().lines().count() as u16;
+            let inner_h = layout.detail_params_inner.height.max(1);
+            paragraph_wheel(&mut app.detail_params_scroll, scroll_up, lines, inner_h);
+        } else if layout.detail_headers.contains(p) {
+            app.detail_pane = DetailPane::Headers;
+            let lines = app.detail_headers_text().lines().count() as u16;
+            let inner_h = layout.detail_headers_inner.height.max(1);
+            paragraph_wheel(&mut app.detail_headers_scroll, scroll_up, lines, inner_h);
+        } else if layout.detail_body.contains(p) {
+            app.detail_pane = DetailPane::Body;
+            let lines = app.detail_body_text().lines().count() as u16;
+            let inner_h = layout.detail_body_inner.height.max(1);
+            paragraph_wheel(&mut app.detail_body_scroll, scroll_up, lines, inner_h);
+        }
         return;
     }
     if layout.response.contains(p) {
         app.main_panel = MainPanel::Response;
-        let resp_lines = response_body_line_estimate(app.pending_request, app.last_http.as_ref());
+        let resp_lines = response_body_line_estimate(app);
         let inner_h = layout.response_inner.height.max(1);
         paragraph_wheel(&mut app.response_scroll, scroll_up, resp_lines, inner_h);
     }
 }
 
-fn response_body_line_estimate(pending: bool, last: Option<&crate::http_exec::HttpResult>) -> u16 {
-    if pending {
+fn response_body_line_estimate(app: &App) -> u16 {
+    if app.pending_request {
         return 1;
     }
-    let Some(h) = last else {
+    let Some(h) = app.last_http.as_ref() else {
         return 1;
     };
+    if app.response_json.is_some() {
+        let lines = 2usize + h.headers_text.lines().count() + 1 + app.response_json_lines().len();
+        return lines.max(1) as u16;
+    }
     let body = truncate(&h.body, 20000);
     let txt = format!(
         "HTTP {}  |  {} ms\n{}\n\n{}",
         h.status, h.elapsed_ms, h.headers_text, body
     );
     txt.lines().count().max(1) as u16
+}
+
+fn build_response_text(app: &App) -> Text<'static> {
+    if app.pending_request {
+        return Text::from("请求中…");
+    }
+    let Some(h) = &app.last_http else {
+        return Text::from("尚无响应。选中接口后按 s 发送（需本地服务已启动）。");
+    };
+    if app.response_json.is_none() {
+        let body = truncate(&h.body, 20000);
+        return Text::from(format!(
+            "HTTP {}  |  {} ms\n{}\n\n{}",
+            h.status, h.elapsed_ms, h.headers_text, body
+        ));
+    }
+
+    let mut lines = Vec::new();
+    lines.push(Line::from(format!("HTTP {}  |  {} ms", h.status, h.elapsed_ms)));
+    for hdr in h.headers_text.lines() {
+        lines.push(Line::from(hdr.to_string()));
+    }
+    lines.push(Line::from(""));
+    for (i, row) in app.response_json_lines().iter().enumerate() {
+        let indent = "  ".repeat(row.depth);
+        let marker = if row.expandable {
+            if row.expanded { "▼ " } else { "▶ " }
+        } else {
+            "  "
+        };
+        let style = if app.main_panel == MainPanel::Response && i == app.response_focus {
+            Style::default().fg(Color::Yellow).bg(Color::Rgb(45, 45, 50))
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{indent}{marker}{}", row.label),
+            style,
+        )));
+    }
+    Text::from(lines)
 }
 
 fn handle_mouse_click(app: &mut App, layout: MainUiLayout, mouse: MouseEvent) {
@@ -596,6 +693,13 @@ fn handle_mouse_click(app: &mut App, layout: MainUiLayout, mouse: MouseEvent) {
     }
     if layout.detail.contains(p) {
         app.main_panel = MainPanel::Detail;
+        if layout.detail_params.contains(p) {
+            app.detail_pane = DetailPane::Params;
+        } else if layout.detail_headers.contains(p) {
+            app.detail_pane = DetailPane::Headers;
+        } else if layout.detail_body.contains(p) {
+            app.detail_pane = DetailPane::Body;
+        }
         return;
     }
     if layout.response.contains(p) {
@@ -604,6 +708,14 @@ fn handle_mouse_click(app: &mut App, layout: MainUiLayout, mouse: MouseEvent) {
 }
 
 fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+    if app.response_view_open {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => app.scroll_response_view_by(-(WHEEL_LINES as i32)),
+            MouseEventKind::ScrollDown => app.scroll_response_view_by(WHEEL_LINES as i32),
+            _ => {}
+        }
+        return;
+    }
     if app.show_help
         || app.request_editor_open
         || app.hosts_panel_open
@@ -644,7 +756,12 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
         .highlight_style(Style::default().bg(Color::DarkGray));
     f.render_stateful_widget(list_w, layout.api_list, &mut app.list_state);
 
-    draw_host_sidebar(f, app, layout.host_sidebar, app.main_panel == MainPanel::HostSidebar);
+    draw_host_sidebar(
+        f,
+        app,
+        layout.host_sidebar,
+        app.main_panel == MainPanel::HostSidebar,
+    );
     draw_header_sidebar(
         f,
         app,
@@ -652,41 +769,89 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
         app.main_panel == MainPanel::HeaderSidebar,
     );
 
-    let detail_txt = app.detail_lines();
-    let detail = Paragraph::new(detail_txt)
+    let detail_outer = Block::default()
+        .borders(Borders::ALL)
+        .border_style(panel_border(app.main_panel == MainPanel::Detail))
+        .title(" 详情 ");
+    f.render_widget(detail_outer, layout.detail);
+
+    let summary = Paragraph::new(app.detail_summary_text())
+        .block(Block::default().borders(Borders::ALL).title(" Summary "))
+        .wrap(Wrap { trim: true });
+    f.render_widget(summary, layout.detail_summary);
+
+    let params_title =
+        if app.main_panel == MainPanel::Detail && app.detail_pane == DetailPane::Params {
+            " [4] Params · e 编辑 "
+        } else {
+            " [4] Params "
+        };
+    let params = Paragraph::new(app.detail_params_text())
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(panel_border(app.main_panel == MainPanel::Detail))
-                .title(" [4] 详情 (s/e/预设头/a) "),
+                .border_style(panel_border(
+                    app.main_panel == MainPanel::Detail && app.detail_pane == DetailPane::Params,
+                ))
+                .title(params_title),
         )
-        .scroll((app.detail_scroll, 0))
+        .scroll((app.detail_params_scroll, 0))
         .wrap(Wrap { trim: true });
-    f.render_widget(detail, layout.detail);
+    f.render_widget(params, layout.detail_params);
 
-    let resp_text = if app.pending_request {
-        "请求中…".to_string()
-    } else if let Some(h) = &app.last_http {
-        let body = truncate(&h.body, 20000);
-        format!(
-            "HTTP {}  |  {} ms\n{}\n\n{}",
-            h.status,
-            h.elapsed_ms,
-            h.headers_text,
-            body
+    let headers_title =
+        if app.main_panel == MainPanel::Detail && app.detail_pane == DetailPane::Headers {
+            " [5] Headers · e 编辑 "
+        } else {
+            " [5] Headers "
+        };
+    let headers = Paragraph::new(app.detail_headers_text())
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(panel_border(
+                    app.main_panel == MainPanel::Detail && app.detail_pane == DetailPane::Headers,
+                ))
+                .title(headers_title),
         )
+        .scroll((app.detail_headers_scroll, 0))
+        .wrap(Wrap { trim: true });
+    f.render_widget(headers, layout.detail_headers);
+
+    let body_title = if app.main_panel == MainPanel::Detail && app.detail_pane == DetailPane::Body {
+        " [6] Body · e 编辑 "
     } else {
-        "尚无响应。选中接口后按 s 发送（需本地服务已启动）。".into()
+        " [6] Body "
     };
-    let resp = Paragraph::new(resp_text)
+    let body = Paragraph::new(app.detail_body_text())
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(panel_border(
+                    app.main_panel == MainPanel::Detail && app.detail_pane == DetailPane::Body,
+                ))
+                .title(body_title),
+        )
+        .scroll((app.detail_body_scroll, 0))
+        .wrap(Wrap { trim: false });
+    f.render_widget(body, layout.detail_body);
+
+    let resp_title = if app.main_panel == MainPanel::Response && app.response_json.is_some() {
+        " [7] 响应 · v 原始弹窗 · ↑/↓ 选择 · Enter/Space 折叠 "
+    } else if app.main_panel == MainPanel::Response {
+        " [7] 响应 · v 原始弹窗 "
+    } else {
+        " [7] 响应 "
+    };
+    let resp = Paragraph::new(build_response_text(app))
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(panel_border(app.main_panel == MainPanel::Response))
-                .title(" [5] 响应 "),
+                .title(resp_title),
         )
         .scroll((app.response_scroll, 0))
-        .wrap(Wrap { trim: true });
+        .wrap(Wrap { trim: false });
     f.render_widget(resp, layout.response);
 
     let scan_hint = if app.scan_errors.is_empty() {
@@ -715,19 +880,14 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
         n => format!(" ({n} 头) "),
     };
     let footer = format!(
-        "Base: {} {}| {}{}{} | 1–5/点击/滚轮 · ? · q · / · e · g · s · r · h · a",
+        "Base: {} {}| {}{}{} | ?:help  f:模糊搜索接口  s:发送  q:退出",
         app.active_base_url(),
         hdr_hint,
         app.status_msg,
         idx_hint,
         scan_hint,
     );
-    let fline = format!(
-        "{}{} filter=\"{}\"",
-        footer,
-        mode,
-        app.filter,
-    );
+    let fline = format!("{}{} filter=\"{}\"", footer, mode, app.filter,);
     let bar = Paragraph::new(fline).block(Block::default().borders(Borders::ALL));
     f.render_widget(bar, footer_area);
 
@@ -753,21 +913,32 @@ fn draw_ui(f: &mut Frame, app: &mut App) {
     if app.request_editor_open {
         draw_request_editor(f, app);
     }
+    if app.response_view_open {
+        draw_response_viewer(f, app);
+    }
 }
 
 fn draw_request_editor(f: &mut Frame, app: &mut App) {
-    let area = centered_rect(90, 88, f.area());
+    let area = match app.detail_pane {
+        DetailPane::Body => centered_rect(90, 88, f.area()),
+        DetailPane::Params => centered_rect(86, 76, f.area()),
+        DetailPane::Headers => centered_rect(82, 72, f.area()),
+    };
     f.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" 请求参数 Path/Query/附加Query/方法预设头/Body · Esc 退出 · + 附加Query · Enter · Tab ");
+    let title = match app.detail_pane {
+        DetailPane::Params => " 编辑 Params · Esc 关闭 ",
+        DetailPane::Headers => " 编辑 Headers · Esc 关闭 ",
+        DetailPane::Body => " 编辑 Body · Esc 关闭 ",
+    };
+    let block = Block::default().borders(Borders::ALL).title(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
+            Constraint::Length(3),
+            Constraint::Length(2),
             Constraint::Length(2),
             Constraint::Min(14),
         ])
@@ -776,18 +947,26 @@ fn draw_request_editor(f: &mut Frame, app: &mut App) {
     let header = Paragraph::new(app.request_sheet_header_text()).wrap(Wrap { trim: true });
     f.render_widget(header, chunks[0]);
 
+    let err = app.request_editor_error.clone().unwrap_or_default();
+    let err_style = if app.request_editor_error.is_some() {
+        Style::default().fg(Color::Red)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    f.render_widget(Paragraph::new(err).style(err_style), chunks[1]);
+
     let focus = Paragraph::new(app.request_editor_focus_label_line())
         .style(Style::default().fg(Color::Yellow));
-    f.render_widget(focus, chunks[1]);
+    f.render_widget(focus, chunks[2]);
 
-    let edit_title = if app.request_editor_is_body_row() {
-        " 编辑区 · Body JSON — Esc 保存退出 · Enter 换行 · Tab 切换字段 "
-    } else {
-        " 编辑区 · Path/Query/附加Query/头 — Esc · ←/→ · Enter 下一项 · Tab 换项；附加Query行 Tab 切名/值 · d 删行 "
+    let edit_title = match app.detail_pane {
+        DetailPane::Params => " 编辑区 ",
+        DetailPane::Headers => " 编辑区 ",
+        DetailPane::Body => " 编辑区 · Body JSON — Enter 换行 · - 清空 · Esc 校验并退出 ",
     };
     let eb = Block::default().borders(Borders::ALL).title(edit_title);
-    let einner = eb.inner(chunks[2]);
-    f.render_widget(eb, chunks[2]);
+    let einner = eb.inner(chunks[3]);
+    f.render_widget(eb, chunks[3]);
     if app.request_editor_is_body_row() {
         let t = text_with_cursor(&app.body_buf, app.body_cursor_char);
         f.render_widget(Paragraph::new(t).wrap(Wrap { trim: false }), einner);
@@ -797,9 +976,34 @@ fn draw_request_editor(f: &mut Frame, app: &mut App) {
     }
 }
 
+fn draw_response_viewer(f: &mut Frame, app: &mut App) {
+    let area = centered_rect(92, 88, f.area());
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" 原始响应 · Esc 关闭 · ↑/↓/j/k/PgUp/PgDn 滚动 ");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let wrapped = soft_wrap_lines(&app.response_popup_text(), inner.width);
+    let max_scroll = wrapped
+        .len()
+        .saturating_sub(inner.height.max(1) as usize) as u16;
+    app.set_response_view_max_scroll(max_scroll);
+    let visible = wrapped
+        .into_iter()
+        .skip(app.response_view_scroll as usize)
+        .take(inner.height.max(1) as usize)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let para = Paragraph::new(visible).wrap(Wrap { trim: false });
+    f.render_widget(para, inner);
+}
+
 /// 在 `cursor` 字符位置插入可见光标（▏），便于终端里辨认插入点（Body 多行或 Path/Query 单行）。
 fn text_with_cursor(body: &str, cursor: usize) -> Text<'static> {
-    let st = Style::default().fg(Color::Yellow).bg(Color::Rgb(45, 45, 50));
+    let st = Style::default()
+        .fg(Color::Yellow)
+        .bg(Color::Rgb(45, 45, 50));
     let mut lines: Vec<Line> = Vec::new();
     let mut line_spans: Vec<Span> = Vec::new();
     let mut char_idx = 0usize;
@@ -827,27 +1031,19 @@ fn text_with_cursor(body: &str, cursor: usize) -> Text<'static> {
 
 const HELP_TEXT: &str = r"lazypost — Spring API 扫描与调试
 
-1–5         主界面切换焦点区块（标题 [1] 列表 [2] 域名 [3] 全局头 [4] 详情 [5] 响应；黄框为当前块）
+1–3         主界面切换模块：1 列表，2 域名，3 全局头
+4–7         详情/响应模块：4 Params，5 Headers，6 Body，7 响应
+列表区       ↑/↓ 切换接口；Space / Enter 折叠或展开项目/类分组
 鼠标左键     点击某区块切换焦点；点在接口列表内会选中对应行（需终端支持鼠标）
-滚轮         指针悬停在各区块上时上下滚动（列表会顺带移动选中行）
+            详情区内点击 Params / Headers / Body 或响应区都可切换焦点
+滚轮         指针悬停在各区块上时上下滚动（列表区会切换接口）
+e           编辑当前模块：2 域名，3 全局头，4 Params，5 Headers，6 Body
+s           发送当前接口请求
+v           在 [7] 响应模块打开原始返回结果弹窗
 q           退出
-?           本帮助
-/           聚焦底栏筛选（Enter 或 Esc 均可退出筛选）
-g           列表分组循环：按项目目录（默认）→ 平铺 → 按类；进入时项目与类默认全折叠
-r           重新扫描项目
-h           域名面板：多 URL/描述、e 改 URL、v 改描述、Enter 选用（左侧栏同步展示）
-a           全局附加请求头（所有接口共性，如 Token）；发送顺序：a → 详情按 GET/POST 等方法预设头 → 扫描到的 @RequestHeader（同名后者覆盖）
-[ / ]       详情区在 Path / Query / 附加 Query / 方法预设请求头 行间切换焦点（▶）
-j / ↓       在列表行上移动（含类标题与接口）
-k / ↑       同上
-Space / Enter  分组模式下选中 📁 项目行或类标题时：折叠/展开
-s           发送当前请求（path/query/方法预设头/body；预设头含 Accept、有 Body 时常含 Content-Type: application/json）
-e           打开/关闭请求参数（Path / Query / 附加 Query / 方法预设头 / Body；Esc 保存退出；非 Body 行可按 o 关闭）
-+           请求参数窗口内：新增一行附加 Query（参与 URL；同名覆盖扫描到的 Query）
-d           焦点在附加 Query 行时：删除该行（其它行照常输入字母 d）
-Tab         请求参数窗口内：切换字段；在附加 Query 行则在「参数名 / 值」间切换（Shift+Tab 反向）
-            非附加行与 ↑/↓/j/k 仍为换字段
-Ctrl+Q      仅在「请求参数」窗口内退出程序；主界面用 q
+?           打开或关闭帮助
+f           打开或关闭接口模糊搜索
+            搜索状态下可直接输入、粘贴和 Backspace 修改关键字
 ";
 
 fn centered_rect(pct_x: u16, pct_y: u16, r: Rect) -> Rect {
@@ -866,9 +1062,29 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+fn soft_wrap_lines(text: &str, width: u16) -> Vec<String> {
+    let w = width.max(1) as usize;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if line.is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        let chars: Vec<char> = line.chars().collect();
+        for chunk in chars.chunks(w) {
+            out.push(chunk.iter().collect());
+        }
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
 fn handle_paste(app: &mut App, pasted: &str) {
     if app.request_editor_open {
         if app.request_editor_is_body_row() {
+            app.request_editor_error = None;
             app.body_insert_str(pasted);
         } else {
             app.param_insert_str(pasted);
@@ -892,18 +1108,45 @@ fn handle_key(
     use KeyCode::*;
 
     if app.show_help {
-        app.show_help = false;
+        match key.code {
+            Esc | Char('?') => app.show_help = false,
+            _ => {}
+        }
+        return Ok(false);
+    }
+
+    if app.response_view_open {
+        match key.code {
+            Esc => app.response_view_open = false,
+            Up | Char('k') | Char('K') => app.scroll_response_view_by(-1),
+            Down | Char('j') | Char('J') => app.scroll_response_view_by(1),
+            PageUp => app.scroll_response_view_by(-10),
+            PageDown => app.scroll_response_view_by(10),
+            _ => {}
+        }
         return Ok(false);
     }
 
     if app.request_editor_open {
-        // 避免 q/j/k/o 与「退出 / vim 式换行 / 关表单」冲突：Body 编辑区里这些键必须能当普通字符输入
-        if matches!(key.code, Char('q') | Char('Q')) && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if matches!(key.code, Char('q') | Char('Q'))
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            app.save_request_editor_row();
+            app.persist_current_request_draft();
             return Ok(true);
         }
         match key.code {
             Esc => {
+                if app.request_editor_is_body_row() {
+                    if let Err(err) = app.validate_body_editor_json() {
+                        app.request_editor_error = Some(err.clone());
+                        app.status_msg = err;
+                        return Ok(false);
+                    }
+                }
+                app.request_editor_error = None;
                 app.save_request_editor_row();
+                app.persist_current_request_draft();
                 app.request_editor_open = false;
             }
             Down => {
@@ -935,7 +1178,9 @@ fn handle_key(
                 }
             }
             Tab => {
-                if app.request_editor_on_extra_query_row() {
+                if app.detail_pane == DetailPane::Headers
+                    && app.request_editor_on_extra_header_row()
+                {
                     app.save_request_editor_row();
                     app.request_editor_extra_kv = !app.request_editor_extra_kv;
                     app.load_request_editor_row();
@@ -944,7 +1189,9 @@ fn handle_key(
                 }
             }
             BackTab => {
-                if app.request_editor_on_extra_query_row() {
+                if app.detail_pane == DetailPane::Headers
+                    && app.request_editor_on_extra_header_row()
+                {
                     app.save_request_editor_row();
                     app.request_editor_extra_kv = !app.request_editor_extra_kv;
                     app.load_request_editor_row();
@@ -954,31 +1201,47 @@ fn handle_key(
             }
             Enter => {
                 if app.request_editor_is_body_row() {
+                    app.request_editor_error = None;
                     app.body_insert_char('\n');
                 } else {
-                    app.move_request_editor_focus(1);
+                    app.param_insert_char('\n');
                 }
             }
             Char(c) => {
                 if app.request_editor_is_body_row() {
-                    app.body_insert_char(c);
-                } else if (c == 'd' || c == 'D') && app.request_editor_on_extra_query_row() {
-                    app.delete_extra_query_row_at_focus();
-                } else {
-                    match c {
-                        '+' => app.add_extra_query_param(),
-                        'j' => app.move_request_editor_focus(1),
-                        'k' => app.move_request_editor_focus(-1),
-                        'o' | 'O' => {
-                            app.save_request_editor_row();
-                            app.request_editor_open = false;
-                        }
-                        _ => app.param_insert_char(c),
+                    if c == '-' {
+                        app.request_editor_error = None;
+                        app.clear_body_editor();
+                        app.status_msg = "已清空 Body".into();
+                    } else {
+                        app.request_editor_error = None;
+                        app.body_insert_char(c);
                     }
+                } else if app.detail_pane == DetailPane::Params && c == '+' {
+                    app.add_extra_query_param();
+                    app.status_msg = "已新增参数".into();
+                } else if app.detail_pane == DetailPane::Headers && c == '+' {
+                    app.add_extra_request_header();
+                    app.status_msg = "已新增 Header".into();
+                } else if app.detail_pane == DetailPane::Params
+                    && c == '-'
+                    && app.request_editor_on_extra_query_row()
+                {
+                    app.delete_extra_query_row_at_focus();
+                    app.status_msg = "已删除参数".into();
+                } else if app.detail_pane == DetailPane::Headers
+                    && c == '-'
+                    && app.request_editor_on_extra_header_row()
+                {
+                    app.delete_extra_header_row_at_focus();
+                    app.status_msg = "已删除 Header".into();
+                } else {
+                    app.param_insert_char(c);
                 }
             }
             Backspace => {
                 if app.request_editor_is_body_row() {
+                    app.request_editor_error = None;
                     app.body_backspace();
                 } else {
                     app.param_backspace();
@@ -986,6 +1249,7 @@ fn handle_key(
             }
             Delete => {
                 if app.request_editor_is_body_row() {
+                    app.request_editor_error = None;
                     app.body_delete_forward();
                 } else {
                     app.param_delete_forward();
@@ -1017,13 +1281,12 @@ fn handle_key(
             Char('d') | Char('D') => app.delete_host_at_cursor(),
             Char('e') | Char('E') => app.begin_edit_host_url(),
             Char('v') | Char('V') => app.begin_edit_host_description(),
-            Down | Char('j') => {
+            Down | Char('j') | Char('J') => {
                 let i = app.hosts_list_state.selected().unwrap_or(0);
                 let max = app.hosts.len().saturating_sub(1);
-                app.hosts_list_state
-                    .select(Some((i + 1).min(max)));
+                app.hosts_list_state.select(Some((i + 1).min(max)));
             }
-            Up | Char('k') => {
+            Up | Char('k') | Char('K') => {
                 let i = app.hosts_list_state.selected().unwrap_or(0);
                 app.hosts_list_state.select(Some(i.saturating_sub(1)));
             }
@@ -1054,13 +1317,12 @@ fn handle_key(
             Char('e') | Char('E') => app.begin_edit_header_name(),
             Char('v') | Char('V') => app.begin_edit_header_value(),
             Char('b') | Char('B') => app.begin_edit_header_description(),
-            Down | Char('j') => {
+            Down | Char('j') | Char('J') => {
                 let i = app.headers_list_state.selected().unwrap_or(0);
                 let max = app.request_headers.len().saturating_sub(1);
-                app.headers_list_state
-                    .select(Some((i + 1).min(max)));
+                app.headers_list_state.select(Some((i + 1).min(max)));
             }
-            Up | Char('k') => {
+            Up | Char('k') | Char('K') => {
                 let i = app.headers_list_state.selected().unwrap_or(0);
                 app.headers_list_state.select(Some(i.saturating_sub(1)));
             }
@@ -1071,8 +1333,7 @@ fn handle_key(
 
     if app.search_focus {
         match key.code {
-            Esc => app.search_focus = false,
-            Enter => app.search_focus = false,
+            Esc | Enter => app.search_focus = false,
             Char(c) => app.filter.push(c),
             Backspace => {
                 app.filter.pop();
@@ -1084,106 +1345,243 @@ fn handle_key(
     }
 
     match key.code {
-        Char(c @ '1'..='5') => {
-            if let Some(p) = MainPanel::from_digit(c) {
-                app.main_panel = p;
-            }
+        Char('q') | Char('Q') => {
+            app.persist_current_request_draft();
+            return Ok(true);
         }
-        Char('q') | Char('Q') => return Ok(true),
-        Char('?') => app.show_help = true,
-        Char('/') => {
+        Char('?') => {
+            app.show_help = true;
+            return Ok(false);
+        }
+        Char('f') | Char('F') => {
             app.search_focus = true;
+            return Ok(false);
         }
-        Char('g') | Char('G') => {
-            app.cycle_list_group_mode();
-            app.status_msg = match app.list_group_mode {
-                ListGroupMode::ByController => "列表：按 Controller 类分组".into(),
-                ListGroupMode::ByProjectFolder => {
-                    "列表：按首级项目目录分组（适合工作区下多子项目）".into()
-                }
-                ListGroupMode::Flat => "列表：平铺".into(),
-            };
-        }
-        Char(' ') | Enter => {
-            if !app.toggle_collapse_selected_header() && app.list_group_mode != ListGroupMode::Flat {
-                app.status_msg =
-                    "折叠：选中 📁 项目行或黄色类行后按 Space 或 Enter".into();
-            }
-        }
-        Char('r') | Char('R') => {
-            if app.scan_in_flight {
-                app.status_msg = "仍在扫描，请稍候再试".into();
-            } else {
-                app.scan_in_flight = true;
-                app.status_msg = "正在重新扫描…".into();
-                let p = app.project.clone();
-                let sx = scan_tx.clone();
-                std::thread::spawn(move || {
-                    let _ = sx.send(scanner::scan_project_with_mode(&p, ScanMode::LazyEndpoints));
-                });
-            }
-        }
-        Char('h') | Char('H') => {
-            app.open_hosts_panel();
-        }
-        Char('a') | Char('A') => {
-            app.open_headers_panel();
-        }
-        Char('e') | Char('E') => {
-            match app.toggle_request_editor() {
-                Ok(()) => {}
-                Err(m) => app.status_msg = m.into(),
-            }
-        }
-        Char('[') => app.move_param_focus(-1),
-        Char(']') => app.move_param_focus(1),
         Char('s') | Char('S') => {
             if app.pending_request {
-                app.status_msg = "尚有请求在执行".into();
+                app.status_msg = "已有请求进行中".into();
                 return Ok(false);
             }
-            if let Some(api) = app.current_api.clone() {
-                let url_m = crate::http_exec::compose_url(
-                    app.active_base_url(),
-                    &api.path,
-                    &app.path_vals,
-                    &app.merged_query_for_url(),
-                );
-                let url = match url_m {
-                    Ok(u) => u,
-                    Err(e) => {
-                        app.status_msg = e;
-                        return Ok(false);
-                    }
-                };
-                let method = api.http_method.clone();
-                let headers = app.merged_http_headers();
-                let body_owned = api
-                    .body_binding
-                    .as_ref()
-                    .map(|_| app.body_draft.clone());
-                app.pending_request = true;
-                app.status_msg = format!("→ {method} {url}");
-                let tx2 = tx.clone();
-                std::thread::spawn(move || {
-                    let body_ref = body_owned.as_deref();
-                    let res = crate::http_exec::send_http(
-                        &method,
-                        &url,
-                        &headers,
-                        body_ref,
-                        30,
-                    );
-                    let _ = tx2.send(res);
-                });
-            } else {
-                app.status_msg = "请先选择接口".into();
+            app.persist_current_request_draft();
+            match app.prepare_request_for_send() {
+                Ok((method, full_url, headers, body)) => {
+                    app.pending_request = true;
+                    app.status_msg = format!("发送中: {} {}", method, full_url);
+                    app.response_scroll = 0;
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        let result = crate::http_exec::send_http(
+                            &method,
+                            &full_url,
+                            &headers,
+                            body.as_deref(),
+                            30,
+                        );
+                        let _ = tx.send(result);
+                    });
+                }
+                Err(err) => app.status_msg = err,
+            }
+            return Ok(false);
+        }
+        Char('v') | Char('V') => {
+            if app.main_panel == MainPanel::Response {
+                if let Err(err) = app.open_response_view() {
+                    app.status_msg = err.into();
+                }
+                return Ok(false);
             }
         }
-        Char('j') | Down => app.move_sel(1),
-        Char('k') | Up => app.move_sel(-1),
         _ => {}
     }
 
+    if let Char(c @ '1'..='7') = key.code {
+        app.select_main_module_digit(c);
+        return Ok(false);
+    }
+
+    if matches!(key.code, Char('e') | Char('E')) {
+        if let Err(m) = app.edit_current_module() {
+            app.status_msg = m.into();
+        }
+    } else if app.main_panel == MainPanel::Response {
+        let visible_h = app
+            .last_main_layout
+            .map(|layout| layout.response_inner.height.max(1))
+            .unwrap_or(1);
+        match key.code {
+            Up => {
+                app.move_response_focus(-1);
+                app.ensure_response_focus_visible(visible_h);
+            }
+            Down => {
+                app.move_response_focus(1);
+                app.ensure_response_focus_visible(visible_h);
+            }
+            Char(' ') | Enter => {
+                if !app.toggle_response_node_at_focus() {
+                    app.status_msg = "当前响应节点不可折叠".into();
+                } else {
+                    app.ensure_response_focus_visible(visible_h);
+                }
+            }
+            _ => {}
+        }
+    } else if app.main_panel == MainPanel::ApiList {
+        match key.code {
+            Up => app.move_sel(-1),
+            Down => app.move_sel(1),
+            Char(' ') | Enter => {
+                if !app.toggle_collapse_selected_header() {
+                    app.status_msg = "折叠/展开仅对列表里的项目分组和类分组生效".into();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let _ = tx;
+    let _ = scan_tx;
+
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ApiParam, LocalApi, ParamLocation};
+    use std::path::PathBuf;
+
+    fn req_param(name: &str, location: ParamLocation, required: bool) -> ApiParam {
+        ApiParam {
+            name: name.into(),
+            java_type: "String".into(),
+            location,
+            required,
+            default_value: None,
+        }
+    }
+
+    fn make_app_with_api(api: LocalApi) -> App {
+        let mut app = App::new(PathBuf::from("."));
+        app.apis = vec![api];
+        app.list_rows = vec![app::ListRow::Endpoint { api_index: 0 }];
+        app.list_state.select(Some(0));
+        app.sync_detail_from_selection();
+        app
+    }
+
+    #[test]
+    fn digits_type_into_host_editor_instead_of_switching_modules() {
+        let mut api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.post".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "POST".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+        api.body_binding = Some(req_param("body", ParamLocation::Body, true));
+
+        let mut app = make_app_with_api(api);
+        app.hosts_panel_open = true;
+        app.hosts_edit_line = true;
+        app.host_buf.clear();
+        app.host_cursor_char = 0;
+
+        let (tx, _rx) = mpsc::channel::<Result<crate::http_exec::HttpResult, String>>();
+        let (scan_tx, _scan_rx) = mpsc::channel::<ScanReport>();
+
+        let _ = handle_key(
+            &mut app,
+            event::KeyEvent::new(KeyCode::Char('6'), KeyModifiers::NONE),
+            &tx,
+            &scan_tx,
+        )
+        .unwrap();
+        assert!(app.hosts_panel_open);
+        assert!(app.hosts_edit_line);
+        assert_eq!(app.main_panel, MainPanel::ApiList);
+        assert_eq!(app.host_buf, "6");
+    }
+
+    #[test]
+    fn digits_type_into_request_editor_instead_of_switching_modules() {
+        let mut api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.post".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "POST".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+        api.body_binding = Some(req_param("body", ParamLocation::Body, true));
+
+        let mut app = make_app_with_api(api);
+        app.detail_pane = DetailPane::Body;
+        app.open_request_editor_for_detail_pane().unwrap();
+
+        let (tx, _rx) = mpsc::channel::<Result<crate::http_exec::HttpResult, String>>();
+        let (scan_tx, _scan_rx) = mpsc::channel::<ScanReport>();
+
+        let _ = handle_key(
+            &mut app,
+            event::KeyEvent::new(KeyCode::Char('6'), KeyModifiers::NONE),
+            &tx,
+            &scan_tx,
+        )
+        .unwrap();
+
+        assert!(app.request_editor_open);
+        assert_eq!(app.main_panel, MainPanel::ApiList);
+        assert_eq!(app.detail_pane, DetailPane::Body);
+        assert!(app.body_buf.ends_with('6'));
+    }
+
+    #[test]
+    fn response_panel_v_opens_raw_response_popup() {
+        let api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.get".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "GET".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+
+        let mut app = make_app_with_api(api);
+        app.main_panel = MainPanel::Response;
+        app.set_last_http_response(crate::http_exec::HttpResult {
+            status: 200,
+            elapsed_ms: 8,
+            headers_text: "content-type: application/json".into(),
+            body: "{\"ok\":true}".into(),
+        });
+
+        let (tx, _rx) = mpsc::channel::<Result<crate::http_exec::HttpResult, String>>();
+        let (scan_tx, _scan_rx) = mpsc::channel::<ScanReport>();
+
+        let _ = handle_key(
+            &mut app,
+            event::KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+            &tx,
+            &scan_tx,
+        )
+        .unwrap();
+
+        assert!(app.response_view_open);
+        assert!(app.response_popup_text().contains("\"ok\": true"));
+    }
+
+    #[test]
+    fn soft_wrap_lines_accounts_for_soft_wrap() {
+        assert_eq!(soft_wrap_lines("abcdef", 4), vec!["abcd", "ef"]);
+        assert_eq!(soft_wrap_lines("a\nbcdef", 4), vec!["a", "bcde", "f"]);
+    }
 }

@@ -12,10 +12,7 @@ pub struct MappingInfo {
 }
 
 /// 从方法上的映射注解解析 HTTP 方法与 path；若无映射则 `None`。
-pub fn mapping_from_method_annotations(
-    annotations: &[Node],
-    source: &[u8],
-) -> Option<MappingInfo> {
+pub fn mapping_from_method_annotations(annotations: &[Node], source: &[u8]) -> Option<MappingInfo> {
     for ann in annotations {
         let simple = annotation_simple_name(*ann, source)?;
         match simple.as_str() {
@@ -148,7 +145,9 @@ fn request_mapping_named_string(ann: Node, source: &[u8], name: &str) -> Option<
 fn extract_method_constant(expr: Node, source: &[u8]) -> Option<String> {
     let text = expr.utf8_text(source).ok()?;
     // `RequestMethod.GET` 或带空格
-    for m in ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE"] {
+    for m in [
+        "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE",
+    ] {
         if text.contains(m) {
             return Some(m.to_string());
         }
@@ -201,7 +200,11 @@ pub fn join_spring_paths(class_prefix: &str, method_suffix: &str) -> String {
             base
         };
     }
-    let suf = if suf.starts_with('/') { suf.to_string() } else { format!("/{suf}") };
+    let suf = if suf.starts_with('/') {
+        suf.to_string()
+    } else {
+        format!("/{suf}")
+    };
     if base.is_empty() {
         suf
     } else {

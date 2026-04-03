@@ -8,13 +8,14 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::ListState;
 
+use crate::http_exec::HttpResult;
 use crate::model::LocalApi;
 use crate::scanner::{JavaSourceCache, ScanReport};
-use crate::http_exec::HttpResult;
-use crate::user_config::{HeaderEntry, HostEntry};
+use crate::user_config::{HeaderEntry, HostEntry, StoredRequestDraft};
 
 /// 左侧列表分组方式（`g` 循环切换）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(dead_code)]
 pub enum ListGroupMode {
     /// 按 Controller 类分组。
     ByController,
@@ -36,7 +37,9 @@ pub enum ListRow {
     },
     /// `bucket` 为 `LocalApi.project_bucket`（首级目录名）。
     ProjectHeader(String),
-    Endpoint { api_index: usize },
+    Endpoint {
+        api_index: usize,
+    },
 }
 
 /// 域名面板内编辑 URL 或描述。
@@ -56,7 +59,7 @@ pub enum RequestHeaderEditKind {
 
 /// 详情区按 HTTP 方法与是否带请求体给出的默认头（非 `a` 全局头、非注解扫描列表）。
 /// 例如：有 Body 时加 `Content-Type: application/json`；GET/POST 等均带 `Accept: application/json`。
-/// 主界面五大区块焦点（数字键 1–5、鼠标左键切换）。
+/// 主界面聚焦区块（数字键 1–7、鼠标左键切换）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MainPanel {
     /// 接口列表。
@@ -72,16 +75,63 @@ pub enum MainPanel {
     Response,
 }
 
-impl MainPanel {
-    pub fn from_digit(c: char) -> Option<Self> {
-        Some(match c {
-            '1' => Self::ApiList,
-            '2' => Self::HostSidebar,
-            '3' => Self::HeaderSidebar,
-            '4' => Self::Detail,
-            '5' => Self::Response,
-            _ => return None,
-        })
+/// 详情区内部聚焦的子 pane。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DetailPane {
+    #[default]
+    Params,
+    Headers,
+    Body,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ApiRequestDraft {
+    path_vals: HashMap<String, String>,
+    query_vals: HashMap<String, String>,
+    extra_query_params: Vec<(String, String)>,
+    method_detail_headers: Vec<(String, String)>,
+    extra_request_headers: Vec<(String, String)>,
+    header_vals: HashMap<String, String>,
+    cookie_vals: HashMap<String, String>,
+    body_draft: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResponseJsonLine {
+    pub depth: usize,
+    pub path: String,
+    pub label: String,
+    pub expandable: bool,
+    pub expanded: bool,
+}
+
+impl From<StoredRequestDraft> for ApiRequestDraft {
+    fn from(value: StoredRequestDraft) -> Self {
+        Self {
+            path_vals: value.path_vals,
+            query_vals: value.query_vals,
+            extra_query_params: value.extra_query_params,
+            method_detail_headers: value.method_detail_headers,
+            extra_request_headers: value.extra_request_headers,
+            header_vals: value.header_vals,
+            cookie_vals: value.cookie_vals,
+            body_draft: value.body_draft,
+        }
+    }
+}
+
+impl From<ApiRequestDraft> for StoredRequestDraft {
+    fn from(value: ApiRequestDraft) -> Self {
+        Self {
+            path_vals: value.path_vals,
+            query_vals: value.query_vals,
+            extra_query_params: value.extra_query_params,
+            method_detail_headers: value.method_detail_headers,
+            extra_request_headers: value.extra_request_headers,
+            header_vals: value.header_vals,
+            cookie_vals: value.cookie_vals,
+            body_draft: value.body_draft,
+        }
     }
 }
 
@@ -95,18 +145,24 @@ pub struct MainUiLayout {
     pub header_sidebar: Rect,
     pub header_sidebar_inner: Rect,
     pub detail: Rect,
-    pub detail_inner: Rect,
+    pub detail_summary: Rect,
+    pub detail_params: Rect,
+    pub detail_params_inner: Rect,
+    pub detail_headers: Rect,
+    pub detail_headers_inner: Rect,
+    pub detail_body: Rect,
+    pub detail_body_inner: Rect,
     pub response: Rect,
     pub response_inner: Rect,
 }
 
-fn default_method_detail_headers(_http_method: &str, has_request_body: bool) -> Vec<(String, String)> {
+fn default_method_detail_headers(
+    _http_method: &str,
+    has_request_body: bool,
+) -> Vec<(String, String)> {
     let mut out = Vec::new();
     if has_request_body {
-        out.push((
-            "Content-Type".to_string(),
-            "application/json".to_string(),
-        ));
+        out.push(("Content-Type".to_string(), "application/json".to_string()));
     }
     out.push(("Accept".to_string(), "application/json".to_string()));
     out
@@ -147,13 +203,24 @@ pub struct App {
     pub extra_query_params: Vec<(String, String)>,
     /// 详情 / `e` 表单：按当前方法（GET/POST…）与是否有 Body 预设的请求头，可改值（顺序即发送时相对顺序，不含全局 `a`）。
     pub method_detail_headers: Vec<(String, String)>,
-    /// 扫描到的 `@RequestHeader`：仅参与发送合并，不在详情里展示编辑。
+    /// 当前请求临时附加的 Header，仅当前接口有效。
+    pub extra_request_headers: Vec<(String, String)>,
+    /// 扫描到的 `@RequestHeader` 当前值：在详情与 `e` 表单里可编辑，并参与发送合并。
     pub header_vals: HashMap<String, String>,
+    /// 扫描到的 `@CookieValue` 当前值：在详情与 `e` 表单里可编辑，并参与发送。
+    pub cookie_vals: HashMap<String, String>,
     pub body_draft: String,
+    request_drafts: HashMap<String, ApiRequestDraft>,
     pub last_http: Option<HttpResult>,
+    pub response_json: Option<serde_json::Value>,
+    response_json_expanded: HashSet<String>,
+    pub response_focus: usize,
     pub pending_request: bool,
     pub status_msg: String,
     pub search_focus: bool,
+    pub response_view_open: bool,
+    pub response_view_scroll: u16,
+    pub response_view_max_scroll: u16,
     /// 域名列表面板（按 h）。
     pub hosts_panel_open: bool,
     /// 在面板内编辑某一行的缓冲。
@@ -192,12 +259,17 @@ pub struct App {
     pub request_editor_focus: usize,
     /// 焦点在「附加 Query」行时：`true` 编辑参数名，`false` 编辑值。
     pub request_editor_extra_kv: bool,
-    /// 主界面当前焦点区块（1–5 / 鼠标切换）。
+    /// 请求编辑弹窗内的即时错误提示，例如 Body JSON 校验失败。
+    pub request_editor_error: Option<String>,
+    /// 主界面当前焦点区块（1–6 / 鼠标切换）。
     pub main_panel: MainPanel,
+    /// 详情区当前子 pane 焦点。
+    pub detail_pane: DetailPane,
     /// 最近一次绘制时的主界面布局（供鼠标命中）。
     pub last_main_layout: Option<MainUiLayout>,
-    /// 详情 Paragraph 垂直滚动行数。
-    pub detail_scroll: u16,
+    pub detail_params_scroll: u16,
+    pub detail_headers_scroll: u16,
+    pub detail_body_scroll: u16,
     /// 响应区 Paragraph 垂直滚动行数。
     pub response_scroll: u16,
     pub host_sidebar_scroll: u16,
@@ -206,7 +278,12 @@ pub struct App {
 
 impl App {
     pub fn new(project: PathBuf) -> Self {
-        let cfg = crate::user_config::load().unwrap_or_else(|_| crate::user_config::UserConfig::default());
+        let cfg = crate::user_config::load()
+            .unwrap_or_else(|_| crate::user_config::UserConfig::default());
+        let project_key = std::fs::canonicalize(&project)
+            .unwrap_or_else(|_| project.clone())
+            .display()
+            .to_string();
         let mut hosts = if cfg.hosts.is_empty() {
             crate::user_config::UserConfig::default().hosts
         } else {
@@ -217,15 +294,21 @@ impl App {
                 h.url = "http://localhost:8080".to_string();
             }
         }
-        let base_url_index = cfg
-            .selected_base_url
-            .min(hosts.len().saturating_sub(1));
+        let base_url_index = cfg.selected_base_url.min(hosts.len().saturating_sub(1));
         let request_headers = cfg.request_headers;
         let selected_request_header = if request_headers.is_empty() {
             0
         } else {
             cfg.selected_request_header.min(request_headers.len() - 1)
         };
+        let request_drafts = cfg
+            .request_drafts_by_project
+            .get(&project_key)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(api_id, draft)| (api_id, ApiRequestDraft::from(draft)))
+            .collect();
 
         Self {
             project,
@@ -251,12 +334,21 @@ impl App {
             query_vals: HashMap::new(),
             extra_query_params: Vec::new(),
             method_detail_headers: Vec::new(),
+            extra_request_headers: Vec::new(),
             header_vals: HashMap::new(),
+            cookie_vals: HashMap::new(),
             body_draft: String::new(),
+            request_drafts,
             last_http: None,
+            response_json: None,
+            response_json_expanded: HashSet::new(),
+            response_focus: 0,
             pending_request: false,
             status_msg: String::new(),
             search_focus: false,
+            response_view_open: false,
+            response_view_scroll: 0,
+            response_view_max_scroll: 0,
             hosts_panel_open: false,
             hosts_edit_line: false,
             hosts_edit_kind: None,
@@ -281,9 +373,13 @@ impl App {
             request_editor_open: false,
             request_editor_focus: 0,
             request_editor_extra_kv: false,
+            request_editor_error: None,
             main_panel: MainPanel::default(),
+            detail_pane: DetailPane::default(),
             last_main_layout: None,
-            detail_scroll: 0,
+            detail_params_scroll: 0,
+            detail_headers_scroll: 0,
+            detail_body_scroll: 0,
             response_scroll: 0,
             host_sidebar_scroll: 0,
             header_sidebar_scroll: 0,
@@ -298,12 +394,311 @@ impl App {
             .unwrap_or("http://localhost:8080")
     }
 
+    fn clear_transient_ui_for_module_switch(&mut self) {
+        if self.request_editor_open {
+            self.save_request_editor_row();
+            self.request_editor_open = false;
+            self.request_editor_error = None;
+            self.persist_current_request_draft();
+        }
+        if self.hosts_edit_line {
+            self.cancel_host_line_edit();
+        }
+        if self.headers_edit_line {
+            self.cancel_header_line_edit();
+        }
+        self.hosts_panel_open = false;
+        self.headers_panel_open = false;
+        self.search_focus = false;
+        self.response_view_open = false;
+        self.response_view_scroll = 0;
+        self.response_view_max_scroll = 0;
+    }
+
+    pub fn select_main_module_digit(&mut self, c: char) -> bool {
+        self.clear_transient_ui_for_module_switch();
+        match c {
+            '1' => self.main_panel = MainPanel::ApiList,
+            '2' => self.main_panel = MainPanel::HostSidebar,
+            '3' => self.main_panel = MainPanel::HeaderSidebar,
+            '4' => {
+                self.main_panel = MainPanel::Detail;
+                self.detail_pane = DetailPane::Params;
+            }
+            '5' => {
+                self.main_panel = MainPanel::Detail;
+                self.detail_pane = DetailPane::Headers;
+            }
+            '6' => {
+                self.main_panel = MainPanel::Detail;
+                self.detail_pane = DetailPane::Body;
+            }
+            '7' => self.main_panel = MainPanel::Response,
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn edit_current_module(&mut self) -> Result<(), &'static str> {
+        match self.main_panel {
+            MainPanel::ApiList => Err("接口列表不可直接编辑；先切到 2/3/4/5/6 对应模块按 e"),
+            MainPanel::HostSidebar => {
+                self.open_hosts_panel();
+                self.begin_edit_host_url();
+                Ok(())
+            }
+            MainPanel::HeaderSidebar => {
+                self.open_headers_panel();
+                if self.request_headers.is_empty() {
+                    self.add_header_row();
+                }
+                self.begin_edit_header_value();
+                Ok(())
+            }
+            MainPanel::Detail => {
+                self.ensure_current_api_selected()?;
+                self.open_request_editor_for_detail_pane()
+            }
+            MainPanel::Response => Err("响应区不可编辑"),
+        }
+    }
+
+    pub fn ensure_current_api_selected(&mut self) -> Result<(), &'static str> {
+        if self.current_api.is_some() {
+            return Ok(());
+        }
+        if let Some(ix) = self.first_endpoint_row_index() {
+            self.list_state.select(Some(ix));
+            self.sync_detail_from_selection();
+            if self.current_api.is_some() {
+                return Ok(());
+            }
+        }
+        match self.list_group_mode {
+            ListGroupMode::ByController => self.collapsed_modules.clear(),
+            ListGroupMode::ByProjectFolder => {
+                self.collapsed_project_buckets.clear();
+                self.collapsed_class_in_project.clear();
+            }
+            ListGroupMode::Flat => {}
+        }
+        self.rebuild_list_rows();
+        if let Some(ix) = self.first_endpoint_row_index() {
+            self.list_state.select(Some(ix));
+            self.sync_detail_from_selection();
+            if self.current_api.is_some() {
+                self.status_msg = "已自动展开并选中首个接口".into();
+                return Ok(());
+            }
+        }
+        Err("请先在左侧展开并选择具体接口")
+    }
+
+    pub fn open_request_editor_for_detail_pane(&mut self) -> Result<(), &'static str> {
+        if self.request_editor_open {
+            self.save_request_editor_row();
+        }
+        self.request_editor_error = None;
+
+        let Some(api) = self.current_api.clone() else {
+            return Err("请先选择接口");
+        };
+
+        let params_count =
+            api.path_params.len() + api.query_params.len() + self.extra_query_params.len();
+        let headers_start = params_count;
+        let headers_count = self.method_detail_headers.len()
+            + self.extra_request_headers.len()
+            + api.cookie_params.len()
+            + api.headers.len();
+        let total = self.request_sheet_row_count();
+
+        match self.detail_pane {
+            DetailPane::Params => {
+                if params_count == 0 {
+                    self.extra_query_params.push((String::new(), String::new()));
+                    let pn = api.path_params.len();
+                    let qn = api.query_params.len();
+                    self.request_editor_focus = pn + qn;
+                    self.request_editor_extra_kv = true;
+                } else {
+                    self.request_editor_focus = 0;
+                    self.request_editor_extra_kv = false;
+                }
+            }
+            DetailPane::Headers => {
+                if headers_count == 0 {
+                    self.extra_request_headers
+                        .push(("X-New-Header".into(), String::new()));
+                    self.request_editor_focus = headers_start;
+                    self.request_editor_extra_kv = true;
+                } else {
+                    self.request_editor_focus = headers_start;
+                    self.request_editor_extra_kv = false;
+                }
+            }
+            DetailPane::Body => {
+                if api.body_binding.is_none() {
+                    return Err("当前接口无 Body 可编辑");
+                }
+                self.request_editor_focus = total.saturating_sub(1);
+                self.request_editor_extra_kv = false;
+            }
+        }
+
+        self.request_editor_open = true;
+        self.load_request_editor_row();
+        Ok(())
+    }
+
+    pub fn detail_summary_text(&self) -> String {
+        let Some(api) = &self.current_api else {
+            return "从左侧列表选择一个接口后，这里会显示接口摘要。".into();
+        };
+        let mut s = String::new();
+        s.push_str(&format!("{}  {}\n", api.http_method, api.path));
+        s.push_str(&format!("{}\n", api.name));
+        if let Some(doc) = &api.description {
+            if !doc.trim().is_empty() {
+                s.push_str(&format!("{doc}\n"));
+            }
+        }
+        s.push_str(&format!("文件: {}:{}\n", api.source_file, api.line));
+        s.push_str(&format!("Base: {}\n", self.active_base_url()));
+        match crate::http_exec::compose_url(
+            self.active_base_url(),
+            &api.path,
+            &self.path_vals,
+            &self.merged_query_for_url(),
+        ) {
+            Ok(u) => s.push_str(&format!("预览: {u}")),
+            Err(e) => s.push_str(&format!("预览失败: {e}")),
+        }
+        s
+    }
+
+    pub fn detail_params_text(&self) -> String {
+        let Some(api) = &self.current_api else {
+            return "当前未选中接口。".into();
+        };
+        let mut s = String::new();
+        if !api.path_params.is_empty() {
+            s.push_str("[Path]\n");
+            for p in &api.path_params {
+                let v = self.path_vals.get(&p.name).cloned().unwrap_or_default();
+                s.push_str(&format!("{} : {} = {:?}\n", p.name, p.java_type, v));
+            }
+            s.push('\n');
+        }
+        if !api.query_params.is_empty() {
+            s.push_str("[Query]\n");
+            for p in &api.query_params {
+                let v = self.query_vals.get(&p.name).cloned().unwrap_or_default();
+                s.push_str(&format!("{} : {} = {:?}\n", p.name, p.java_type, v));
+            }
+            s.push('\n');
+        }
+        if !self.extra_query_params.is_empty() {
+            s.push_str("[附加 Query]\n");
+            for (k, (ek, ev)) in self.extra_query_params.iter().enumerate() {
+                let label = if ek.trim().is_empty() {
+                    format!("(第 {} 行空参数名)", k + 1)
+                } else {
+                    ek.clone()
+                };
+                s.push_str(&format!("{} = {:?}\n", label, ev));
+            }
+            s.push('\n');
+        }
+        if !api.model_params.is_empty() {
+            s.push_str("[ModelAttribute] （已扫描，发送闭环待实现）\n");
+            for p in &api.model_params {
+                s.push_str(&format!("{} : {}\n", p.name, p.java_type));
+            }
+            s.push('\n');
+        }
+        if s.trim().is_empty() {
+            "当前接口没有 Path / Query / Model 参数。".into()
+        } else {
+            s
+        }
+    }
+
+    pub fn detail_headers_text(&self) -> String {
+        let Some(api) = &self.current_api else {
+            return "当前未选中接口。".into();
+        };
+        let mut s = String::new();
+        if !self.method_detail_headers.is_empty() {
+            s.push_str("[预设 Header]\n");
+            for (k, v) in &self.method_detail_headers {
+                s.push_str(&format!("{k} = {:?}\n", v));
+            }
+            s.push('\n');
+        }
+        if !self.extra_request_headers.is_empty() {
+            s.push_str("[附加 Header]\n");
+            for (k, v) in &self.extra_request_headers {
+                s.push_str(&format!("{k} = {:?}\n", v));
+            }
+            s.push('\n');
+        }
+        if !api.cookie_params.is_empty() {
+            s.push_str("[Cookie]\n");
+            for p in &api.cookie_params {
+                let v = self.cookie_vals.get(&p.name).cloned().unwrap_or_default();
+                s.push_str(&format!("{} : {} = {:?}\n", p.name, p.java_type, v));
+            }
+            s.push('\n');
+        }
+        if !api.headers.is_empty() {
+            s.push_str("[@RequestHeader]\n");
+            for p in &api.headers {
+                let v = self.header_vals.get(&p.name).cloned().unwrap_or_default();
+                s.push_str(&format!("{} : {} = {:?}\n", p.name, p.java_type, v));
+            }
+            s.push('\n');
+        }
+        if s.trim().is_empty() {
+            "当前接口没有 Header / Cookie 参数。".into()
+        } else {
+            s
+        }
+    }
+
+    pub fn detail_body_text(&self) -> String {
+        let Some(api) = &self.current_api else {
+            return "当前未选中接口。".into();
+        };
+        let Some(binding) = &api.body_binding else {
+            return "当前接口无 @RequestBody。".into();
+        };
+        let mut s = String::new();
+        s.push_str(&format!("{} : {}\n\n", binding.name, binding.java_type));
+        if api.body.is_none() {
+            s.push_str("(Body JSON 等待源码索引或无法解析 DTO，片刻后重试或检查类型名)");
+        } else {
+            s.push_str(&self.body_draft);
+        }
+        s
+    }
+
     pub fn persist_config(&mut self) {
         let mut cfg = crate::user_config::load().unwrap_or_default();
         cfg.hosts = self.hosts.clone();
         cfg.selected_base_url = self.base_url_index;
         cfg.request_headers = self.request_headers.clone();
         cfg.selected_request_header = self.selected_request_header;
+        let project_key = std::fs::canonicalize(&self.project)
+            .unwrap_or_else(|_| self.project.clone())
+            .display()
+            .to_string();
+        let drafts = self
+            .request_drafts
+            .iter()
+            .map(|(api_id, draft)| (api_id.clone(), StoredRequestDraft::from(draft.clone())))
+            .collect();
+        cfg.request_drafts_by_project.insert(project_key, drafts);
         if let Err(e) = crate::user_config::save(&cfg) {
             self.status_msg = format!("保存配置失败: {e}");
         }
@@ -313,9 +708,7 @@ impl App {
         self.hosts_panel_open = true;
         self.hosts_edit_line = false;
         self.hosts_edit_kind = None;
-        let i = self
-            .base_url_index
-            .min(self.hosts.len().saturating_sub(1));
+        let i = self.base_url_index.min(self.hosts.len().saturating_sub(1));
         self.hosts_list_state.select(Some(i));
     }
 
@@ -346,16 +739,10 @@ impl App {
         if self.base_url_index > i {
             self.base_url_index -= 1;
         } else if was_active {
-            self.base_url_index = self
-                .base_url_index
-                .min(self.hosts.len().saturating_sub(1));
+            self.base_url_index = self.base_url_index.min(self.hosts.len().saturating_sub(1));
         }
         let max = self.hosts.len().saturating_sub(1);
-        let sel = self
-            .hosts_list_state
-            .selected()
-            .unwrap_or(0)
-            .min(max);
+        let sel = self.hosts_list_state.selected().unwrap_or(0).min(max);
         self.hosts_list_state.select(Some(sel));
         self.persist_config();
         self.status_msg = "已删除域名".into();
@@ -491,6 +878,7 @@ impl App {
     }
 
     /// 发给 `send_http` 的附加头。
+    #[allow(dead_code)]
     pub fn extra_headers_for_http(&self) -> Vec<(String, String)> {
         self.request_headers
             .iter()
@@ -501,6 +889,7 @@ impl App {
 
     /// 合并顺序：全局头（`a`）→ 详情按方法预设头 → 扫描到的 `@RequestHeader`；后者同名覆盖前者。
     /// 空串或全空白值不会加入请求。
+    #[allow(dead_code)]
     pub fn merged_http_headers(&self) -> Vec<(String, String)> {
         use std::collections::HashMap;
         let mut acc: HashMap<String, (String, String)> = HashMap::new();
@@ -516,6 +905,15 @@ impl App {
             }
             acc.insert(k.to_ascii_lowercase(), (k.clone(), v.clone()));
         }
+        for (k, v) in &self.extra_request_headers {
+            if k.trim().is_empty() || v.trim().is_empty() {
+                continue;
+            }
+            acc.insert(
+                k.trim().to_ascii_lowercase(),
+                (k.trim().to_string(), v.clone()),
+            );
+        }
         if let Some(api) = &self.current_api {
             for p in &api.headers {
                 let v = self
@@ -526,13 +924,335 @@ impl App {
                 if v.trim().is_empty() {
                     continue;
                 }
-                acc.insert(
-                    p.name.to_ascii_lowercase(),
-                    (p.name.clone(), v.to_string()),
-                );
+                acc.insert(p.name.to_ascii_lowercase(), (p.name.clone(), v.to_string()));
+            }
+            if let Some(cookie_header) = self.compose_cookie_header_value() {
+                let key = "cookie".to_string();
+                let merged = match acc.remove(&key) {
+                    Some((orig_name, existing)) if !existing.trim().is_empty() => {
+                        (orig_name, format!("{existing}; {cookie_header}"))
+                    }
+                    Some((orig_name, _)) => (orig_name, cookie_header),
+                    None => ("Cookie".to_string(), cookie_header),
+                };
+                acc.insert(key, merged);
             }
         }
         acc.into_values().collect()
+    }
+
+    #[allow(dead_code)]
+    fn compose_cookie_header_value(&self) -> Option<String> {
+        let api = self.current_api.as_ref()?;
+        let mut parts = Vec::new();
+        for p in &api.cookie_params {
+            let v = self
+                .cookie_vals
+                .get(&p.name)
+                .map(|s| s.trim())
+                .unwrap_or("");
+            if v.is_empty() {
+                continue;
+            }
+            parts.push(format!("{}={}", p.name, v));
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("; "))
+        }
+    }
+
+    /// 发送前的最小必填校验：拦住明显缺失的 Path / Query / Header / Body。
+    #[allow(dead_code)]
+    pub fn validate_request_before_send(&self) -> Result<(), String> {
+        let Some(api) = &self.current_api else {
+            return Err("请先选择接口".into());
+        };
+
+        let mut missing = Vec::new();
+
+        for p in &api.path_params {
+            let empty = self
+                .path_vals
+                .get(&p.name)
+                .map(|v| v.trim().is_empty())
+                .unwrap_or(true);
+            if p.required && empty {
+                missing.push(format!("Path `{}`", p.name));
+            }
+        }
+
+        for p in &api.query_params {
+            let empty = self
+                .query_vals
+                .get(&p.name)
+                .map(|v| v.trim().is_empty())
+                .unwrap_or(true);
+            if p.required && empty {
+                missing.push(format!("Query `{}`", p.name));
+            }
+        }
+
+        for p in &api.headers {
+            let empty = self
+                .header_vals
+                .get(&p.name)
+                .map(|v| v.trim().is_empty())
+                .unwrap_or(true);
+            if p.required && empty {
+                missing.push(format!("Header `{}`", p.name));
+            }
+        }
+
+        for p in &api.cookie_params {
+            let empty = self
+                .cookie_vals
+                .get(&p.name)
+                .map(|v| v.trim().is_empty())
+                .unwrap_or(true);
+            if p.required && empty {
+                missing.push(format!("Cookie `{}`", p.name));
+            }
+        }
+
+        if let Some(body) = &api.body_binding {
+            if body.required && self.body_draft.trim().is_empty() {
+                missing.push(format!("Body `{}`", body.name));
+            }
+        }
+
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("缺少必填参数: {}", missing.join("、")))
+        }
+    }
+
+    pub fn prepare_request_for_send(
+        &mut self,
+    ) -> Result<(String, String, Vec<(String, String)>, Option<String>), String> {
+        self.ensure_current_api_selected()
+            .map_err(|m| m.to_string())?;
+        self.validate_request_before_send()?;
+        if self
+            .current_api
+            .as_ref()
+            .and_then(|api| api.body_binding.as_ref())
+            .is_some()
+        {
+            self.validate_body_editor_json()?;
+        }
+
+        let api = self
+            .current_api
+            .as_ref()
+            .ok_or_else(|| "请先选择接口".to_string())?;
+        let full_url = crate::http_exec::compose_url(
+            self.active_base_url(),
+            &api.path,
+            &self.path_vals,
+            &self.merged_query_for_url(),
+        )?;
+        let headers = self.merged_http_headers();
+        let body = if api.body_binding.is_some() {
+            Some(self.body_draft.clone())
+        } else {
+            None
+        };
+        Ok((api.http_method.clone(), full_url, headers, body))
+    }
+
+    pub fn set_last_http_response(&mut self, h: HttpResult) {
+        self.response_json = serde_json::from_str(&h.body).ok();
+        self.response_json_expanded.clear();
+        self.response_focus = 0;
+        self.last_http = Some(h);
+        self.response_scroll = 0;
+        self.response_view_scroll = 0;
+        self.response_view_max_scroll = 0;
+    }
+
+    pub fn open_response_view(&mut self) -> Result<(), &'static str> {
+        if self.last_http.is_none() {
+            return Err("当前还没有响应可查看");
+        }
+        self.response_view_open = true;
+        self.response_view_scroll = 0;
+        self.response_view_max_scroll = 0;
+        Ok(())
+    }
+
+    pub fn set_response_view_max_scroll(&mut self, max_scroll: u16) {
+        self.response_view_max_scroll = max_scroll;
+        self.response_view_scroll = self.response_view_scroll.min(max_scroll);
+    }
+
+    pub fn scroll_response_view_by(&mut self, delta: i32) {
+        let next = (self.response_view_scroll as i32 + delta)
+            .clamp(0, self.response_view_max_scroll as i32) as u16;
+        self.response_view_scroll = next;
+    }
+
+    pub fn response_popup_text(&self) -> String {
+        let Some(h) = &self.last_http else {
+            return "尚无响应。".into();
+        };
+        let body = serde_json::from_str::<serde_json::Value>(&h.body)
+            .ok()
+            .and_then(|v| serde_json::to_string_pretty(&v).ok())
+            .unwrap_or_else(|| h.body.clone());
+        format!(
+            "HTTP {}  |  {} ms\n{}\n\n{}",
+            h.status, h.elapsed_ms, h.headers_text, body
+        )
+    }
+
+    pub fn response_json_lines(&self) -> Vec<ResponseJsonLine> {
+        let Some(value) = &self.response_json else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        self.push_response_json_lines(value, "", None, 0, &mut out);
+        out
+    }
+
+    pub fn move_response_focus(&mut self, delta: isize) {
+        let lines = self.response_json_lines();
+        if lines.is_empty() {
+            return;
+        }
+        let max = lines.len().saturating_sub(1) as isize;
+        self.response_focus = (self.response_focus as isize + delta).clamp(0, max) as usize;
+    }
+
+    pub fn ensure_response_focus_visible(&mut self, visible_height: u16) {
+        let Some(line_idx) = self.response_focus_line_index() else {
+            return;
+        };
+        let vh = visible_height.max(1) as usize;
+        let total = self.response_render_line_count().max(1);
+        let max_scroll = total.saturating_sub(vh);
+        let top = self.response_scroll as usize;
+        if line_idx < top {
+            self.response_scroll = line_idx.min(max_scroll) as u16;
+        } else if line_idx >= top + vh {
+            self.response_scroll = (line_idx + 1).saturating_sub(vh).min(max_scroll) as u16;
+        } else if top > max_scroll {
+            self.response_scroll = max_scroll as u16;
+        }
+    }
+
+    pub fn toggle_response_node_at_focus(&mut self) -> bool {
+        let lines = self.response_json_lines();
+        let Some(line) = lines.get(self.response_focus) else {
+            return false;
+        };
+        if !line.expandable {
+            return false;
+        }
+        if !self.response_json_expanded.insert(line.path.clone()) {
+            self.response_json_expanded.remove(&line.path);
+        }
+        true
+    }
+
+    fn response_focus_line_index(&self) -> Option<usize> {
+        self.response_json.as_ref()?;
+        let header_lines = self
+            .last_http
+            .as_ref()
+            .map(|h| h.headers_text.lines().count())
+            .unwrap_or(0);
+        Some(header_lines + 2 + self.response_focus)
+    }
+
+    fn response_render_line_count(&self) -> usize {
+        let Some(h) = self.last_http.as_ref() else {
+            return 1;
+        };
+        if self.response_json.is_some() {
+            2 + h.headers_text.lines().count() + self.response_json_lines().len()
+        } else {
+            let body = h.body.lines().count();
+            2 + h.headers_text.lines().count() + body
+        }
+    }
+
+    fn push_response_json_lines(
+        &self,
+        value: &serde_json::Value,
+        path: &str,
+        key: Option<&str>,
+        depth: usize,
+        out: &mut Vec<ResponseJsonLine>,
+    ) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if let Some(k) = key {
+                    let expanded = self.response_json_expanded.contains(path);
+                    out.push(ResponseJsonLine {
+                        depth,
+                        path: path.to_string(),
+                        label: format!("{}: {}", k, object_summary(map.len())),
+                        expandable: !map.is_empty(),
+                        expanded,
+                    });
+                    if !expanded {
+                        return;
+                    }
+                }
+                for (child_key, child_value) in map {
+                    let child_path = format!("{}/{}", path, escape_json_pointer(child_key));
+                    self.push_response_json_lines(
+                        child_value,
+                        &child_path,
+                        Some(child_key),
+                        depth + usize::from(key.is_some()),
+                        out,
+                    );
+                }
+            }
+            serde_json::Value::Array(items) => {
+                if let Some(k) = key {
+                    let expanded = self.response_json_expanded.contains(path);
+                    out.push(ResponseJsonLine {
+                        depth,
+                        path: path.to_string(),
+                        label: format!("{}: {}", k, array_summary(items.len())),
+                        expandable: !items.is_empty(),
+                        expanded,
+                    });
+                    if !expanded {
+                        return;
+                    }
+                }
+                for (idx, child_value) in items.iter().enumerate() {
+                    let idx_label = format!("[{}]", idx);
+                    let child_path = format!("{}/{}", path, idx);
+                    self.push_response_json_lines(
+                        child_value,
+                        &child_path,
+                        Some(&idx_label),
+                        depth + usize::from(key.is_some()),
+                        out,
+                    );
+                }
+            }
+            _ => {
+                let label = match key {
+                    Some(k) => format!("{}: {}", k, scalar_summary(value)),
+                    None => scalar_summary(value),
+                };
+                out.push(ResponseJsonLine {
+                    depth,
+                    path: path.to_string(),
+                    label,
+                    expandable: false,
+                    expanded: false,
+                });
+            }
+        }
     }
 
     pub fn open_headers_panel(&mut self) {
@@ -627,7 +1347,10 @@ impl App {
             return;
         };
         if i < self.request_headers.len() {
-            self.header_buf = self.request_headers[i].description.clone().unwrap_or_default();
+            self.header_buf = self.request_headers[i]
+                .description
+                .clone()
+                .unwrap_or_default();
             self.headers_edit_kind = Some(RequestHeaderEditKind::Description);
             self.headers_edit_line = true;
             self.header_cursor_char = self.header_buf.chars().count();
@@ -814,10 +1537,8 @@ impl App {
                 });
                 if self.pending_collapse_all_modules {
                     self.pending_collapse_all_modules = false;
-                    self.collapsed_modules = idxs
-                        .iter()
-                        .map(|&i| self.apis[i].module.clone())
-                        .collect();
+                    self.collapsed_modules =
+                        idxs.iter().map(|&i| self.apis[i].module.clone()).collect();
                 }
                 let mut last: Option<&str> = None;
                 for &i in &idxs {
@@ -870,8 +1591,7 @@ impl App {
                     let b = api.project_bucket.as_str();
                     let m = api.module.as_str();
                     if last_bucket != Some(b) {
-                        self.list_rows
-                            .push(ListRow::ProjectHeader(b.to_string()));
+                        self.list_rows.push(ListRow::ProjectHeader(b.to_string()));
                         last_bucket = Some(b);
                         last_module_in_bucket = None;
                     }
@@ -897,6 +1617,7 @@ impl App {
     }
 
     /// `g`：按项目目录 → 平铺 → 按类 → 按项目目录。
+    #[allow(dead_code)]
     pub fn cycle_list_group_mode(&mut self) {
         use ListGroupMode::*;
         self.list_group_mode = match self.list_group_mode {
@@ -971,50 +1692,49 @@ impl App {
                 self.list_state.select(Some(sel));
                 self.sync_detail_from_selection();
             }
-            ListGroupMode::ByProjectFolder => {
-                match self.list_rows.get(ix) {
-                    Some(ListRow::ProjectHeader(bucket)) => {
-                        let k = bucket.clone();
-                        if self.collapsed_project_buckets.contains(&k) {
-                            self.collapsed_project_buckets.remove(&k);
-                        } else {
-                            self.collapsed_project_buckets.insert(k.clone());
-                        }
-                        self.rebuild_list_rows();
-                        if self.list_rows.is_empty() {
-                            self.list_state.select(None);
-                            self.current_api = None;
-                            return true;
-                        }
-                        let sel = self
-                            .list_rows
-                            .iter()
-                            .position(|r| matches!(r, ListRow::ProjectHeader(b) if b == &k))
-                            .unwrap_or(0)
-                            .min(self.list_rows.len() - 1);
-                        self.list_state.select(Some(sel));
-                        self.sync_detail_from_selection();
+            ListGroupMode::ByProjectFolder => match self.list_rows.get(ix) {
+                Some(ListRow::ProjectHeader(bucket)) => {
+                    let k = bucket.clone();
+                    if self.collapsed_project_buckets.contains(&k) {
+                        self.collapsed_project_buckets.remove(&k);
+                    } else {
+                        self.collapsed_project_buckets.insert(k.clone());
                     }
-                    Some(ListRow::ClassHeader {
-                        scope_bucket: Some(bucket),
-                        module,
-                        ..
-                    }) => {
-                        let bucket_owned = bucket.clone();
-                        let module_owned = module.clone();
-                        let key = (bucket_owned.clone(), module_owned.clone());
-                        if self.collapsed_class_in_project.contains(&key) {
-                            self.collapsed_class_in_project.remove(&key);
-                        } else {
-                            self.collapsed_class_in_project.insert(key.clone());
-                        }
-                        self.rebuild_list_rows();
-                        if self.list_rows.is_empty() {
-                            self.list_state.select(None);
-                            self.current_api = None;
-                            return true;
-                        }
-                        let sel = self
+                    self.rebuild_list_rows();
+                    if self.list_rows.is_empty() {
+                        self.list_state.select(None);
+                        self.current_api = None;
+                        return true;
+                    }
+                    let sel = self
+                        .list_rows
+                        .iter()
+                        .position(|r| matches!(r, ListRow::ProjectHeader(b) if b == &k))
+                        .unwrap_or(0)
+                        .min(self.list_rows.len() - 1);
+                    self.list_state.select(Some(sel));
+                    self.sync_detail_from_selection();
+                }
+                Some(ListRow::ClassHeader {
+                    scope_bucket: Some(bucket),
+                    module,
+                    ..
+                }) => {
+                    let bucket_owned = bucket.clone();
+                    let module_owned = module.clone();
+                    let key = (bucket_owned.clone(), module_owned.clone());
+                    if self.collapsed_class_in_project.contains(&key) {
+                        self.collapsed_class_in_project.remove(&key);
+                    } else {
+                        self.collapsed_class_in_project.insert(key.clone());
+                    }
+                    self.rebuild_list_rows();
+                    if self.list_rows.is_empty() {
+                        self.list_state.select(None);
+                        self.current_api = None;
+                        return true;
+                    }
+                    let sel = self
                             .list_rows
                             .iter()
                             .position(|r| {
@@ -1029,53 +1749,170 @@ impl App {
                             })
                             .unwrap_or(0)
                             .min(self.list_rows.len() - 1);
-                        self.list_state.select(Some(sel));
-                        self.sync_detail_from_selection();
-                    }
-                    _ => return false,
+                    self.list_state.select(Some(sel));
+                    self.sync_detail_from_selection();
                 }
-            }
+                _ => return false,
+            },
         }
         true
     }
 
     pub fn sync_detail_from_selection(&mut self) {
         let Some(row_ix) = self.list_state.selected() else {
+            if self.current_api.is_some() {
+                if self.request_editor_open {
+                    self.save_request_editor_row();
+                    self.request_editor_open = false;
+                    self.request_editor_error = None;
+                }
+                self.save_current_api_draft();
+                self.persist_config();
+            }
             self.current_api = None;
             return;
         };
         let api_ix = match self.list_rows.get(row_ix) {
             Some(ListRow::Endpoint { api_index }) => *api_index,
             Some(ListRow::ClassHeader { .. }) | Some(ListRow::ProjectHeader(_)) => {
+                if self.current_api.is_some() {
+                    if self.request_editor_open {
+                        self.save_request_editor_row();
+                        self.request_editor_open = false;
+                        self.request_editor_error = None;
+                    }
+                    self.save_current_api_draft();
+                    self.persist_config();
+                }
                 self.current_api = None;
                 return;
             }
             None => {
+                if self.current_api.is_some() {
+                    if self.request_editor_open {
+                        self.save_request_editor_row();
+                        self.request_editor_open = false;
+                        self.request_editor_error = None;
+                    }
+                    self.save_current_api_draft();
+                    self.persist_config();
+                }
                 self.current_api = None;
                 return;
             }
         };
         let mut lazy_filled = false;
         if let Some(cache) = self.source_cache.clone() {
-            lazy_filled =
-                crate::scanner::ensure_request_body_resolved(&mut self.apis[api_ix], &cache, &self.project);
+            lazy_filled = crate::scanner::ensure_request_body_resolved(
+                &mut self.apis[api_ix],
+                &cache,
+                &self.project,
+            );
         }
         let api = self.apis[api_ix].clone();
-        let id_changed = self.current_api.as_ref().map(|a| a.id != api.id).unwrap_or(true);
+        let id_changed = self
+            .current_api
+            .as_ref()
+            .map(|a| a.id != api.id)
+            .unwrap_or(true);
         if id_changed {
-            self.param_focus = None;
-            self.detail_scroll = 0;
             if self.request_editor_open {
                 self.save_request_editor_row();
                 self.request_editor_open = false;
+                self.request_editor_error = None;
             }
-            self.restore_defaults_for_api(&api);
+            self.save_current_api_draft();
+            self.persist_config();
+            self.param_focus = None;
+            self.detail_params_scroll = 0;
+            self.detail_headers_scroll = 0;
+            self.detail_body_scroll = 0;
+            self.restore_request_state_for_api(&api);
             self.current_api = Some(api);
         } else if lazy_filled {
-            self.detail_scroll = 0;
-            self.restore_defaults_for_api(&api);
+            self.detail_params_scroll = 0;
+            self.detail_headers_scroll = 0;
+            self.detail_body_scroll = 0;
+            self.restore_request_state_for_api(&api);
             self.current_api = Some(api);
         }
+    }
+
+    fn save_current_api_draft(&mut self) {
+        let Some(api) = &self.current_api else {
+            return;
+        };
+        let draft_key = api.request_draft_key();
+        self.request_drafts.insert(
+            draft_key.clone(),
+            ApiRequestDraft {
+                path_vals: self.path_vals.clone(),
+                query_vals: self.query_vals.clone(),
+                extra_query_params: self.extra_query_params.clone(),
+                method_detail_headers: self.method_detail_headers.clone(),
+                extra_request_headers: self.extra_request_headers.clone(),
+                header_vals: self.header_vals.clone(),
+                cookie_vals: self.cookie_vals.clone(),
+                body_draft: self.body_draft.clone(),
+            },
+        );
+        if draft_key != api.id {
+            self.request_drafts.remove(&api.id);
+        }
+    }
+
+    fn restore_request_state_for_api(&mut self, api: &LocalApi) {
+        self.restore_defaults_for_api(api);
+
+        let draft = self.request_drafts.get(&api.request_draft_key()).cloned();
+        let Some(draft) = draft else {
+            return;
+        };
+
+        for p in &api.path_params {
+            if let Some(v) = draft.path_vals.get(&p.name) {
+                self.path_vals.insert(p.name.clone(), v.clone());
+            }
+        }
+        for p in &api.query_params {
+            if let Some(v) = draft.query_vals.get(&p.name) {
+                self.query_vals.insert(p.name.clone(), v.clone());
+            }
+        }
+        self.extra_query_params = draft.extra_query_params;
+
+        let mut method_headers =
+            default_method_detail_headers(&api.http_method, api.body_binding.is_some());
+        for (name, value) in &mut method_headers {
+            if let Some((_, saved)) = draft
+                .method_detail_headers
+                .iter()
+                .find(|(saved_name, _)| saved_name.eq_ignore_ascii_case(name))
+            {
+                *value = saved.clone();
+            }
+        }
+        self.method_detail_headers = method_headers;
+        self.extra_request_headers = draft.extra_request_headers;
+
+        for p in &api.headers {
+            if let Some(v) = draft.header_vals.get(&p.name) {
+                self.header_vals.insert(p.name.clone(), v.clone());
+            }
+        }
+        for p in &api.cookie_params {
+            if let Some(v) = draft.cookie_vals.get(&p.name) {
+                self.cookie_vals.insert(p.name.clone(), v.clone());
+            }
+        }
+        if api.body_binding.is_some() {
+            self.body_draft = draft.body_draft;
+        }
+    }
+
+    pub fn persist_current_request_draft(&mut self) {
+        self.save_current_api_draft();
+        self.persist_config();
     }
 
     fn restore_defaults_for_api(&mut self, api: &LocalApi) {
@@ -1088,20 +1925,22 @@ impl App {
         }
         self.query_vals.clear();
         for p in &api.query_params {
-            self.query_vals.insert(
-                p.name.clone(),
-                p.default_value.clone().unwrap_or_default(),
-            );
+            self.query_vals
+                .insert(p.name.clone(), p.default_value.clone().unwrap_or_default());
         }
         self.extra_query_params.clear();
         self.method_detail_headers =
             default_method_detail_headers(&api.http_method, api.body_binding.is_some());
+        self.extra_request_headers.clear();
         self.header_vals.clear();
         for p in &api.headers {
-            self.header_vals.insert(
-                p.name.clone(),
-                p.default_value.clone().unwrap_or_default(),
-            );
+            self.header_vals
+                .insert(p.name.clone(), p.default_value.clone().unwrap_or_default());
+        }
+        self.cookie_vals.clear();
+        for p in &api.cookie_params {
+            self.cookie_vals
+                .insert(p.name.clone(), p.default_value.clone().unwrap_or_default());
         }
         self.body_draft = api
             .body
@@ -1119,16 +1958,6 @@ impl App {
         let ni = (cur as isize + delta).clamp(0, (n - 1) as isize) as usize;
         self.list_state.select(Some(ni));
         self.sync_detail_from_selection();
-    }
-
-    fn param_flat_len(&self) -> usize {
-        let Some(api) = &self.current_api else {
-            return 0;
-        };
-        api.path_params.len()
-            + api.query_params.len()
-            + self.extra_query_params.len()
-            + self.method_detail_headers.len()
     }
 
     /// 发送与预览 URL 使用的 Query：扫描默认值 + 手工附加（同名时以后者为准）。
@@ -1155,6 +1984,38 @@ impl App {
         en > 0 && f >= pn + qn && f < pn + qn + en
     }
 
+    pub fn request_editor_on_extra_header_row(&self) -> bool {
+        let Some(api) = &self.current_api else {
+            return false;
+        };
+        let f = self.request_editor_focus;
+        let pn = api.path_params.len();
+        let qn = api.query_params.len();
+        let en = self.extra_query_params.len();
+        let hn = self.method_detail_headers.len();
+        let xhn = self.extra_request_headers.len();
+        xhn > 0 && f >= pn + qn + en + hn && f < pn + qn + en + hn + xhn
+    }
+
+    /// 当前请求编辑弹窗所允许编辑的行范围（按 Params / Headers / Body 子模块分开）。
+    pub fn request_editor_bounds(&self) -> Option<(usize, usize)> {
+        let api = self.current_api.as_ref()?;
+        let params_end =
+            api.path_params.len() + api.query_params.len() + self.extra_query_params.len();
+        let headers_end = params_end
+            + self.method_detail_headers.len()
+            + self.extra_request_headers.len()
+            + api.cookie_params.len()
+            + api.headers.len();
+        let total = self.request_sheet_row_count();
+        match self.detail_pane {
+            DetailPane::Params if params_end > 0 => Some((0, params_end)),
+            DetailPane::Headers if headers_end > params_end => Some((params_end, headers_end)),
+            DetailPane::Body if api.body_binding.is_some() && total > 0 => Some((total - 1, total)),
+            _ => None,
+        }
+    }
+
     /// 「+」：在扫描 Query 之后追加一行手工 Query（先编辑参数名，Tab 切到值）。
     pub fn add_extra_query_param(&mut self) {
         self.save_request_editor_row();
@@ -1166,6 +2027,23 @@ impl App {
         let qn = api.query_params.len();
         let en = self.extra_query_params.len();
         self.request_editor_focus = pn + qn + en - 1;
+        self.request_editor_extra_kv = true;
+        self.load_request_editor_row();
+    }
+
+    pub fn add_extra_request_header(&mut self) {
+        self.save_request_editor_row();
+        self.extra_request_headers
+            .push(("X-New-Header".into(), String::new()));
+        let Some(api) = &self.current_api else {
+            return;
+        };
+        let pn = api.path_params.len();
+        let qn = api.query_params.len();
+        let en = self.extra_query_params.len();
+        let hn = self.method_detail_headers.len();
+        let xhn = self.extra_request_headers.len();
+        self.request_editor_focus = pn + qn + en + hn + xhn - 1;
         self.request_editor_extra_kv = true;
         self.load_request_editor_row();
     }
@@ -1188,33 +2066,46 @@ impl App {
         }
         self.extra_query_params.remove(idx);
         self.request_editor_extra_kv = false;
-        let n = self.request_sheet_row_count();
-        if n == 0 {
+        if self.detail_pane == DetailPane::Params && pn + qn + self.extra_query_params.len() == 0 {
+            self.extra_query_params.push((String::new(), String::new()));
+            self.request_editor_focus = pn + qn;
+            self.request_editor_extra_kv = true;
+            self.load_request_editor_row();
             return true;
         }
-        self.request_editor_focus = self.request_editor_focus.min(n - 1);
+        let Some((start, end)) = self.request_editor_bounds() else {
+            return true;
+        };
+        self.request_editor_focus = self.request_editor_focus.clamp(start, end - 1);
         self.load_request_editor_row();
         true
     }
 
-    pub fn move_param_focus(&mut self, delta: isize) {
-        let n = self.param_flat_len();
-        if n == 0 {
-            return;
+    pub fn delete_extra_header_row_at_focus(&mut self) -> bool {
+        if !self.request_editor_on_extra_header_row() {
+            return false;
         }
-        let n_i = n as isize;
-        let cur = match self.param_focus {
-            Some(i) => i as isize,
-            None => {
-                if delta > 0 {
-                    -1
-                } else {
-                    n_i
-                }
-            }
+        self.save_request_editor_row();
+        let Some(api) = self.current_api.as_ref() else {
+            return false;
         };
-        let next = (cur + delta).rem_euclid(n_i) as usize;
-        self.param_focus = Some(next);
+        let f = self.request_editor_focus;
+        let pn = api.path_params.len();
+        let qn = api.query_params.len();
+        let en = self.extra_query_params.len();
+        let hn = self.method_detail_headers.len();
+        let idx = f - pn - qn - en - hn;
+        if idx >= self.extra_request_headers.len() {
+            return false;
+        }
+        self.extra_request_headers.remove(idx);
+        self.request_editor_extra_kv = false;
+        let Some((start, end)) = self.request_editor_bounds() else {
+            return true;
+        };
+        self.request_editor_focus = self.request_editor_focus.clamp(start, end - 1);
+        self.load_request_editor_row();
+        true
     }
 
     pub fn request_editor_is_body_row(&self) -> bool {
@@ -1225,7 +2116,11 @@ impl App {
         let qn = api.query_params.len();
         let en = self.extra_query_params.len();
         let hn = self.method_detail_headers.len();
-        api.body_binding.is_some() && self.request_editor_focus >= pn + qn + en + hn
+        let xhn = self.extra_request_headers.len();
+        let cn = api.cookie_params.len();
+        let rhn = api.headers.len();
+        api.body_binding.is_some()
+            && self.request_editor_focus >= pn + qn + en + hn + xhn + cn + rhn
     }
 
     pub fn save_request_editor_row(&mut self) {
@@ -1237,6 +2132,9 @@ impl App {
         let qn = api.query_params.len();
         let en = self.extra_query_params.len();
         let hn = self.method_detail_headers.len();
+        let xhn = self.extra_request_headers.len();
+        let cn = api.cookie_params.len();
+        let rhn = api.headers.len();
         if f < pn {
             let name = api.path_params[f].name.clone();
             self.path_vals.insert(name, self.param_edit_buf.clone());
@@ -1257,6 +2155,23 @@ impl App {
             if let Some(slot) = self.method_detail_headers.get_mut(row) {
                 slot.1 = self.param_edit_buf.clone();
             }
+        } else if f < pn + qn + en + hn + xhn {
+            let row = f - pn - qn - en - hn;
+            if let Some(slot) = self.extra_request_headers.get_mut(row) {
+                if self.request_editor_extra_kv {
+                    slot.0 = self.param_edit_buf.clone();
+                } else {
+                    slot.1 = self.param_edit_buf.clone();
+                }
+            }
+        } else if f < pn + qn + en + hn + xhn + cn {
+            let row = f - pn - qn - en - hn - xhn;
+            let name = api.cookie_params[row].name.clone();
+            self.cookie_vals.insert(name, self.param_edit_buf.clone());
+        } else if f < pn + qn + en + hn + xhn + cn + rhn {
+            let row = f - pn - qn - en - hn - xhn - cn;
+            let name = api.headers[row].name.clone();
+            self.header_vals.insert(name, self.param_edit_buf.clone());
         } else if api.body_binding.is_some() {
             self.body_draft = self.body_buf.clone();
         }
@@ -1271,6 +2186,9 @@ impl App {
         let qn = api.query_params.len();
         let en = self.extra_query_params.len();
         let hn = self.method_detail_headers.len();
+        let xhn = self.extra_request_headers.len();
+        let cn = api.cookie_params.len();
+        let rhn = api.headers.len();
         if f < pn {
             let name = &api.path_params[f].name;
             self.param_edit_buf = self.path_vals.get(name).cloned().unwrap_or_default();
@@ -1295,6 +2213,25 @@ impl App {
                 .get(row)
                 .map(|(_, v)| v.clone())
                 .unwrap_or_default();
+            self.param_cursor_char = self.param_edit_buf.chars().count();
+        } else if f < pn + qn + en + hn + xhn {
+            let row = f - pn - qn - en - hn;
+            let (ref k, ref v) = self.extra_request_headers[row];
+            self.param_edit_buf = if self.request_editor_extra_kv {
+                k.clone()
+            } else {
+                v.clone()
+            };
+            self.param_cursor_char = self.param_edit_buf.chars().count();
+        } else if f < pn + qn + en + hn + xhn + cn {
+            let row = f - pn - qn - en - hn - xhn;
+            let name = &api.cookie_params[row].name;
+            self.param_edit_buf = self.cookie_vals.get(name).cloned().unwrap_or_default();
+            self.param_cursor_char = self.param_edit_buf.chars().count();
+        } else if f < pn + qn + en + hn + xhn + cn + rhn {
+            let row = f - pn - qn - en - hn - xhn - cn;
+            let name = &api.headers[row].name;
+            self.param_edit_buf = self.header_vals.get(name).cloned().unwrap_or_default();
             self.param_cursor_char = self.param_edit_buf.chars().count();
         } else {
             self.body_buf = self.body_draft.clone();
@@ -1360,6 +2297,20 @@ impl App {
         self.body_buf.drain(b..b + ch.len_utf8());
     }
 
+    pub fn clear_body_editor(&mut self) {
+        self.body_buf.clear();
+        self.body_cursor_char = 0;
+    }
+
+    pub fn validate_body_editor_json(&self) -> Result<(), String> {
+        if self.body_buf.trim().is_empty() {
+            return Ok(());
+        }
+        serde_json::from_str::<serde_json::Value>(&self.body_buf)
+            .map(|_| ())
+            .map_err(|e| format!("Body JSON 格式错误: {e}"))
+    }
+
     pub fn param_cursor_left(&mut self) {
         if self.param_cursor_char > 0 {
             self.param_cursor_char -= 1;
@@ -1392,7 +2343,8 @@ impl App {
         if self.param_cursor_char == 0 {
             return;
         }
-        let b = super::body_cursor::char_byte_index(&self.param_edit_buf, self.param_cursor_char - 1);
+        let b =
+            super::body_cursor::char_byte_index(&self.param_edit_buf, self.param_cursor_char - 1);
         let ch = self.param_edit_buf[b..].chars().next().unwrap();
         self.param_edit_buf.drain(b..b + ch.len_utf8());
         self.param_cursor_char -= 1;
@@ -1415,19 +2367,26 @@ impl App {
         let mut n = api.path_params.len()
             + api.query_params.len()
             + self.extra_query_params.len()
-            + self.method_detail_headers.len();
+            + self.method_detail_headers.len()
+            + self.extra_request_headers.len()
+            + api.cookie_params.len()
+            + api.headers.len();
         if api.body_binding.is_some() {
             n += 1;
         }
         n
     }
 
+    #[allow(dead_code)]
     pub fn toggle_request_editor(&mut self) -> Result<(), &'static str> {
         if self.request_editor_open {
             self.save_request_editor_row();
+            self.request_editor_error = None;
+            self.persist_current_request_draft();
             self.request_editor_open = false;
             return Ok(());
         }
+        self.request_editor_error = None;
         let Some(api) = self.current_api.as_ref() else {
             return Err("请先选择接口");
         };
@@ -1443,35 +2402,43 @@ impl App {
             return Ok(());
         }
         self.request_editor_open = true;
-        self.request_editor_focus = 0;
+        self.request_editor_focus = if api.body_binding.is_some() { n - 1 } else { 0 };
         self.request_editor_extra_kv = false;
         self.load_request_editor_row();
         Ok(())
     }
 
     pub fn move_request_editor_focus(&mut self, delta: isize) {
-        let n = self.request_sheet_row_count();
-        if n == 0 {
+        let Some((start, end)) = self.request_editor_bounds() else {
             return;
-        }
+        };
         self.save_request_editor_row();
         self.request_editor_extra_kv = false;
-        let n_i = n as isize;
-        let cur = self.request_editor_focus as isize;
-        self.request_editor_focus = ((cur + delta).rem_euclid(n_i)) as usize;
+        let span = end.saturating_sub(start);
+        if span == 0 {
+            return;
+        }
+        let cur = self.request_editor_focus.clamp(start, end - 1) - start;
+        let next = ((cur as isize + delta).rem_euclid(span as isize)) as usize;
+        self.request_editor_focus = start + next;
         self.load_request_editor_row();
     }
 
     pub fn request_sheet_header_text(&self) -> String {
-        let Some(api) = &self.current_api else {
+        let Some(_) = &self.current_api else {
             return String::new();
         };
-        format!(
-            "{}  {}\n{}\n直接输入下方编辑区 · Esc 保存退出 · Tab 切换字段（附加 Query 行内 Tab 切换参数名/值）· + 增加附加 Query · 附加行上 d 删除 · Path/Query/方法预设头 内 ←/→ · Body 内 ↑/↓/←/→ 移动光标",
-            api.http_method,
-            api.path,
-            api.name
-        )
+        match self.detail_pane {
+            DetailPane::Params => {
+                "可编辑：Path / Query / 附加 Query · Enter 换行 · Tab 切换 · + 新参数 · - 删除参数"
+                    .into()
+            }
+            DetailPane::Headers => {
+                "可编辑：预设 Header / 附加 Header / Cookie / @RequestHeader · Enter 换行 · Tab 切换 · + 新参数 · - 删除参数".into()
+            }
+            DetailPane::Body => "仅编辑 Request Body JSON · 支持粘贴 · - 清空 · Esc 校验并退出"
+                .into(),
+        }
     }
 
     /// 请求表单内「当前正在编辑哪一项」单行提示（无列表，打开即可打字）。
@@ -1479,29 +2446,29 @@ impl App {
         let Some(api) = &self.current_api else {
             return String::new();
         };
-        let total = self.request_sheet_row_count();
+        let Some((start, end)) = self.request_editor_bounds() else {
+            return String::new();
+        };
+        let total = end.saturating_sub(start);
         if total == 0 {
             return String::new();
         }
-        let i = self.request_editor_focus + 1;
+        let i = self.request_editor_focus.clamp(start, end - 1) - start + 1;
         let f = self.request_editor_focus;
         let pn = api.path_params.len();
         let qn = api.query_params.len();
         let en = self.extra_query_params.len();
         let hn = self.method_detail_headers.len();
+        let xhn = self.extra_request_headers.len();
+        let cn = api.cookie_params.len();
+        let rhn = api.headers.len();
         if f < pn {
             let p = &api.path_params[f];
-            return format!(
-                "当前 Path  ·  {}  ({})  = 编辑下方值    [{i}/{total}]",
-                p.name, p.java_type
-            );
+            return format!("Path · {}    [{i}/{total}]", p.name);
         }
         if f < pn + qn {
             let p = &api.query_params[f - pn];
-            return format!(
-                "当前 Query ·  {}  ({})  = 编辑下方值    [{i}/{total}]",
-                p.name, p.java_type
-            );
+            return format!("Query · {}    [{i}/{total}]", p.name);
         }
         if f < pn + qn + en {
             let j = f - pn - qn;
@@ -1516,17 +2483,29 @@ impl App {
             } else {
                 kn.as_str()
             };
-            return format!(
-                "附加 Query · `{}` — 编辑下方{part}（Tab 切换名/值）    [{i}/{total}]",
-                show
-            );
+            return format!("附加 Query · `{}` · {}    [{i}/{total}]", show, part);
         }
         if f < pn + qn + en + hn {
             let (hname, _) = &self.method_detail_headers[f - pn - qn - en];
-            return format!(
-                "当前 Header ·  {} （按方法预设） = 编辑下方值    [{i}/{total}]",
-                hname
-            );
+            return format!("Header · {}    [{i}/{total}]", hname);
+        }
+        if f < pn + qn + en + hn + xhn {
+            let j = f - pn - qn - en - hn;
+            let (ref kn, _) = self.extra_request_headers[j];
+            let part = if self.request_editor_extra_kv {
+                "名称"
+            } else {
+                "值"
+            };
+            return format!("附加 Header · `{}` · {}    [{i}/{total}]", kn, part);
+        }
+        if f < pn + qn + en + hn + xhn + cn {
+            let p = &api.cookie_params[f - pn - qn - en - hn - xhn];
+            return format!("Cookie · {}    [{i}/{total}]", p.name);
+        }
+        if f < pn + qn + en + hn + xhn + cn + rhn {
+            let p = &api.headers[f - pn - qn - en - hn - xhn - cn];
+            return format!("Header · {}    [{i}/{total}]", p.name);
         }
         if let Some(b) = &api.body_binding {
             return format!(
@@ -1537,6 +2516,7 @@ impl App {
         String::new()
     }
 
+    #[allow(dead_code)]
     pub fn detail_lines(&self) -> String {
         if let Some(ix) = self.list_state.selected() {
             if let Some(ListRow::ClassHeader {
@@ -1612,20 +2592,26 @@ impl App {
         }
         s.push_str(&format!("{}:{}\n", api.source_file, api.line));
         s.push_str(
-            "按 e 修改请求参数（Path / Query / 附加 Query / 方法预设请求头 / Body 同一窗口；Esc 保存退出；+ 增加附加 Query；附加行上 d 删除）\n\
-以下为按 HTTP 方法与是否带 Body 预设的头（如 Accept、Content-Type），非注解扫描；全局附加头按 a（先合并 a，再合并本区，最后 @RequestHeader 同名覆盖）\n\n",
+            "按 e 修改请求参数（Path / Query / 附加 Query / 方法预设请求头 / Cookie / @RequestHeader / Body 同一窗口；Esc 保存退出；+ 增加附加 Query；附加行上 d 删除）\n\
+以下为按 HTTP 方法与是否带 Body 预设的头（如 Accept、Content-Type）、Cookie 与扫描到的 `@RequestHeader`；全局附加头按 a（先合并 a，再合并本区，最后 `@RequestHeader` 同名覆盖；Cookie 合并进 `Cookie` 头）\n\n",
         );
         let path_n = api.path_params.len();
         let mh = self.method_detail_headers.len();
         let exn = self.extra_query_params.len();
-        let n_params = path_n + api.query_params.len() + exn + mh;
+        let cookie_n = api.cookie_params.len();
+        let req_hn = api.headers.len();
+        let n_params = path_n + api.query_params.len() + exn + mh + cookie_n + req_hn;
         if n_params > 0 {
-            s.push_str("[参数]  [ / ] 详情内切换 Path → Query → 附加 Query → 请求头 · e 修改请求参数\n");
+            s.push_str("[参数]  [ / ] 详情内切换 Path → Query → 附加 Query → 预设请求头 → Cookie → @RequestHeader · e 修改请求参数\n");
         }
         if !api.path_params.is_empty() {
             s.push_str("[Path]\n");
             for (i, p) in api.path_params.iter().enumerate() {
-                let mark = if self.param_focus == Some(i) { "▶" } else { " " };
+                let mark = if self.param_focus == Some(i) {
+                    "▶"
+                } else {
+                    " "
+                };
                 let v = self.path_vals.get(&p.name).cloned().unwrap_or_default();
                 s.push_str(&format!(
                     " {}  {} : {} = {:?}\n",
@@ -1638,7 +2624,11 @@ impl App {
             s.push_str("[Query]\n");
             for (j, p) in api.query_params.iter().enumerate() {
                 let flat = path_n + j;
-                let mark = if self.param_focus == Some(flat) { "▶" } else { " " };
+                let mark = if self.param_focus == Some(flat) {
+                    "▶"
+                } else {
+                    " "
+                };
                 let v = self.query_vals.get(&p.name).cloned().unwrap_or_default();
                 s.push_str(&format!(
                     " {}  {} : {} = {:?}\n",
@@ -1651,7 +2641,11 @@ impl App {
             s.push_str("[附加 Query]  （手动追加，参与预览与发送；同名覆盖扫描 Query）\n");
             for (k, (ek, ev)) in self.extra_query_params.iter().enumerate() {
                 let flat = path_n + api.query_params.len() + k;
-                let mark = if self.param_focus == Some(flat) { "▶" } else { " " };
+                let mark = if self.param_focus == Some(flat) {
+                    "▶"
+                } else {
+                    " "
+                };
                 let label = if ek.trim().is_empty() {
                     "（空参数名不参与 URL）"
                 } else {
@@ -1663,39 +2657,64 @@ impl App {
         }
         if !self.method_detail_headers.is_empty() {
             s.push_str(&format!(
-                "[Header]  （按 {} 与是否带 Body 预设 Accept / Content-Type 等，可改）\n",
+                "[预设 Header]  （按 {} 与是否带 Body 预设 Accept / Content-Type 等，可改）\n",
                 api.http_method
             ));
             for (k, (hname, hval)) in self.method_detail_headers.iter().enumerate() {
                 let flat = path_n + api.query_params.len() + exn + k;
-                let mark = if self.param_focus == Some(flat) { "▶" } else { " " };
+                let mark = if self.param_focus == Some(flat) {
+                    "▶"
+                } else {
+                    " "
+                };
                 s.push_str(&format!(" {}  {} = {:?}\n", mark, hname, hval));
             }
             s.push('\n');
         }
+        if !api.cookie_params.is_empty() {
+            s.push_str(
+                "[Cookie]  （由 `@CookieValue` 扫描得到，可改；发送时合并到 `Cookie` 头）\n",
+            );
+            for (k, p) in api.cookie_params.iter().enumerate() {
+                let flat = path_n + api.query_params.len() + exn + mh + k;
+                let mark = if self.param_focus == Some(flat) {
+                    "▶"
+                } else {
+                    " "
+                };
+                let v = self.cookie_vals.get(&p.name).cloned().unwrap_or_default();
+                s.push_str(&format!(
+                    " {}  {} : {} = {:?}\n",
+                    mark, p.name, p.java_type, v
+                ));
+            }
+            s.push('\n');
+        }
         if !api.headers.is_empty() {
-            s.push_str(&format!(
-                "（另有 {} 个 @RequestHeader 由扫描预填并参与发送，不在此列表编辑）\n",
-                api.headers.len()
-            ));
+            s.push_str("[@RequestHeader]  （由扫描得到，可改；发送时覆盖同名全局头/预设头）\n");
+            for (k, p) in api.headers.iter().enumerate() {
+                let flat = path_n + api.query_params.len() + exn + mh + cookie_n + k;
+                let mark = if self.param_focus == Some(flat) {
+                    "▶"
+                } else {
+                    " "
+                };
+                let v = self.header_vals.get(&p.name).cloned().unwrap_or_default();
+                s.push_str(&format!(
+                    " {}  {} : {} = {:?}\n",
+                    mark, p.name, p.java_type, v
+                ));
+            }
+            s.push('\n');
         }
         if let Some(b) = &api.body_binding {
-            s.push_str(&format!(
-                "[Body] {} {} \n",
-                b.name, b.java_type
-            ));
+            s.push_str(&format!("[Body] {} {} \n", b.name, b.java_type));
         }
         if api.body_binding.is_some() {
             if api.body.is_none() {
                 s.push_str("(Body JSON 等待源码索引或无法解析 DTO，片刻后重试或检查类型名)\n\n");
             } else {
                 s.push_str(&format!("{}\n\n", self.body_draft));
-            }
-        }
-        if !api.cookie_params.is_empty() {
-            s.push_str("[Cookie] （已扫描，编辑与发送待后续版本）\n");
-            for p in &api.cookie_params {
-                s.push_str(&format!("     {} : {}\n", p.name, p.java_type));
             }
         }
         let preview = crate::http_exec::compose_url(
@@ -1743,7 +2762,9 @@ impl App {
                     } else {
                         format!("▼ 📁 {bucket}")
                     },
-                    Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 ListRow::Endpoint { api_index } => {
                     let a = &self.apis[*api_index];
@@ -1770,9 +2791,9 @@ impl App {
 
     pub fn list_title_suffix(&self) -> &'static str {
         match self.list_group_mode {
-            ListGroupMode::ByController => " [按类 g·Space/Enter]",
-            ListGroupMode::ByProjectFolder => " [按目录 g·Space/Enter 项目/类]",
-            ListGroupMode::Flat => " [平铺 g]",
+            ListGroupMode::ByController => " [按类 · Space/Enter]",
+            ListGroupMode::ByProjectFolder => " [按目录 · Space/Enter 项目/类]",
+            ListGroupMode::Flat => " [平铺]",
         }
     }
 }
@@ -1787,4 +2808,632 @@ fn method_style(method: &str) -> Style {
         "PATCH" => Style::default().fg(Color::Magenta),
         _ => Style::default().fg(Color::White),
     }
+}
+
+fn object_summary(len: usize) -> String {
+    format!("{{{len} 项}}")
+}
+
+fn array_summary(len: usize) -> String {
+    format!("[{len} 项]")
+}
+
+fn scalar_summary(value: &serde_json::Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "null".into())
+}
+
+fn escape_json_pointer(s: &str) -> String {
+    s.replace('~', "~0").replace('/', "~1")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ApiParam, LocalApi, ParamLocation};
+
+    fn req_param(name: &str, location: ParamLocation, required: bool) -> ApiParam {
+        ApiParam {
+            name: name.into(),
+            java_type: "String".into(),
+            location,
+            required,
+            default_value: None,
+        }
+    }
+
+    fn make_app_with_api(api: LocalApi) -> App {
+        let mut app = App::new(PathBuf::from("."));
+        app.restore_defaults_for_api(&api);
+        app.current_api = Some(api);
+        app
+    }
+
+    #[test]
+    fn request_editor_includes_scanned_request_headers() {
+        let mut api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.echo".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "POST".into(),
+            "/echo".into(),
+            ".".into(),
+        );
+        api.headers
+            .push(req_param("X-Tenant", ParamLocation::Header, true));
+        api.body_binding = Some(req_param("body", ParamLocation::Body, true));
+
+        let app = make_app_with_api(api);
+        assert_eq!(app.request_sheet_row_count(), 4);
+    }
+
+    #[test]
+    fn validate_request_blocks_missing_required_header() {
+        let mut api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.get".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "GET".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+        api.headers
+            .push(req_param("Authorization", ParamLocation::Header, true));
+
+        let app = make_app_with_api(api);
+        assert!(app
+            .validate_request_before_send()
+            .unwrap_err()
+            .contains("Header `Authorization`"));
+    }
+
+    #[test]
+    fn merged_http_headers_contains_cookie_header_from_cookie_params() {
+        let mut api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.get".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "GET".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+        api.cookie_params
+            .push(req_param("sid", ParamLocation::Cookie, true));
+        api.cookie_params
+            .push(req_param("tenant", ParamLocation::Cookie, false));
+
+        let mut app = make_app_with_api(api);
+        app.cookie_vals.insert("sid".into(), "abc".into());
+        app.cookie_vals.insert("tenant".into(), "t1".into());
+
+        let headers = app.merged_http_headers();
+        let cookie = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("cookie"))
+            .map(|(_, v)| v.as_str());
+        assert_eq!(cookie, Some("sid=abc; tenant=t1"));
+    }
+
+    #[test]
+    fn merged_http_headers_contains_extra_request_header() {
+        let api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.get".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "GET".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+
+        let mut app = make_app_with_api(api);
+        app.extra_request_headers
+            .push(("X-Trace-Id".into(), "trace-1".into()));
+
+        let headers = app.merged_http_headers();
+        let trace = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("x-trace-id"))
+            .map(|(_, v)| v.as_str());
+        assert_eq!(trace, Some("trace-1"));
+    }
+
+    #[test]
+    fn validate_request_blocks_missing_required_cookie() {
+        let mut api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.get".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "GET".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+        api.cookie_params
+            .push(req_param("sid", ParamLocation::Cookie, true));
+
+        let app = make_app_with_api(api);
+        assert!(app
+            .validate_request_before_send()
+            .unwrap_err()
+            .contains("Cookie `sid`"));
+    }
+
+    #[test]
+    fn toggle_request_editor_prefers_body_row_when_body_exists() {
+        let mut api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.post".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "POST".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+        api.headers
+            .push(req_param("X-Tenant", ParamLocation::Header, false));
+        api.cookie_params
+            .push(req_param("sid", ParamLocation::Cookie, false));
+        api.body_binding = Some(req_param("body", ParamLocation::Body, true));
+        api.body = Some(serde_json::json!({"name": null}));
+
+        let mut app = make_app_with_api(api);
+        app.toggle_request_editor().unwrap();
+
+        assert!(app.request_editor_is_body_row());
+        assert!(app.body_buf.contains("name"));
+    }
+
+    #[test]
+    fn select_main_module_digit_maps_detail_shortcuts() {
+        let api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.get".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "GET".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+        let mut app = make_app_with_api(api);
+
+        assert!(app.select_main_module_digit('4'));
+        assert_eq!(app.main_panel, MainPanel::Detail);
+        assert_eq!(app.detail_pane, DetailPane::Params);
+
+        assert!(app.select_main_module_digit('5'));
+        assert_eq!(app.main_panel, MainPanel::Detail);
+        assert_eq!(app.detail_pane, DetailPane::Headers);
+
+        assert!(app.select_main_module_digit('6'));
+        assert_eq!(app.main_panel, MainPanel::Detail);
+        assert_eq!(app.detail_pane, DetailPane::Body);
+
+        assert!(app.select_main_module_digit('7'));
+        assert_eq!(app.main_panel, MainPanel::Response);
+    }
+
+    #[test]
+    fn request_editor_focus_stays_within_headers_mode() {
+        let mut api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.post".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "POST".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+        api.path_params
+            .push(req_param("id", ParamLocation::Path, true));
+        api.headers
+            .push(req_param("X-Tenant", ParamLocation::Header, false));
+        api.body_binding = Some(req_param("body", ParamLocation::Body, true));
+
+        let mut app = make_app_with_api(api);
+        app.detail_pane = DetailPane::Headers;
+        app.open_request_editor_for_detail_pane().unwrap();
+        let (_, headers_end) = app.request_editor_bounds().unwrap();
+
+        app.move_request_editor_focus(1);
+
+        assert!(app.request_editor_focus < headers_end);
+        assert!(!app.request_editor_is_body_row());
+    }
+
+    #[test]
+    fn deleting_last_extra_param_stays_in_params_mode() {
+        let mut api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.post".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "POST".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+        api.headers
+            .push(req_param("X-Tenant", ParamLocation::Header, false));
+        api.body_binding = Some(req_param("body", ParamLocation::Body, true));
+
+        let mut app = make_app_with_api(api);
+        app.detail_pane = DetailPane::Params;
+        app.extra_query_params.push(("q".into(), "1".into()));
+        app.open_request_editor_for_detail_pane().unwrap();
+
+        assert!(app.delete_extra_query_row_at_focus());
+        assert_eq!(app.detail_pane, DetailPane::Params);
+        assert_eq!(app.extra_query_params.len(), 1);
+        assert!(app.request_editor_bounds().is_some());
+        assert!(!app.request_editor_is_body_row());
+    }
+
+    #[test]
+    fn validate_body_editor_json_rejects_invalid_json() {
+        let mut api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.post".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "POST".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+        api.body_binding = Some(req_param("body", ParamLocation::Body, true));
+
+        let mut app = make_app_with_api(api);
+        app.body_buf = "{\"name\":".into();
+
+        assert!(app.validate_body_editor_json().is_err());
+    }
+
+    #[test]
+    fn validate_body_editor_json_allows_empty_body() {
+        let mut api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.post".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "POST".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+        api.body_binding = Some(req_param("body", ParamLocation::Body, true));
+
+        let app = make_app_with_api(api);
+
+        assert!(app.validate_body_editor_json().is_ok());
+    }
+
+    #[test]
+    fn switching_between_apis_preserves_request_edits() {
+        let mut api1 = LocalApi::new_stub(
+            "1".into(),
+            "Demo.post".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "POST".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+        api1.path_params
+            .push(req_param("id", ParamLocation::Path, true));
+        api1.query_params
+            .push(req_param("q", ParamLocation::Query, false));
+        api1.cookie_params
+            .push(req_param("sid", ParamLocation::Cookie, false));
+        api1.headers
+            .push(req_param("X-Tenant", ParamLocation::Header, false));
+        api1.body_binding = Some(req_param("body", ParamLocation::Body, true));
+        api1.body = Some(serde_json::json!({"name": null}));
+
+        let api2 = LocalApi::new_stub(
+            "2".into(),
+            "Demo.other".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            2,
+            "GET".into(),
+            "/other".into(),
+            ".".into(),
+        );
+
+        let mut app = App::new(PathBuf::from("."));
+        app.apis = vec![api1.clone(), api2];
+        app.list_rows = vec![ListRow::Endpoint { api_index: 0 }, ListRow::Endpoint { api_index: 1 }];
+
+        app.list_state.select(Some(0));
+        app.sync_detail_from_selection();
+        app.path_vals.insert("id".into(), "42".into());
+        app.query_vals.insert("q".into(), "search".into());
+        app.extra_query_params
+            .push(("page".into(), "2".into()));
+        app.method_detail_headers[0].1 = "application/xml".into();
+        app.extra_request_headers
+            .push(("X-Trace-Id".into(), "trace-1".into()));
+        app.header_vals.insert("X-Tenant".into(), "tenant-a".into());
+        app.cookie_vals.insert("sid".into(), "cookie-a".into());
+        app.body_draft = "{\"name\":\"alice\"}".into();
+
+        app.list_state.select(Some(1));
+        app.sync_detail_from_selection();
+
+        app.list_state.select(Some(0));
+        app.sync_detail_from_selection();
+
+        assert_eq!(app.path_vals.get("id").map(String::as_str), Some("42"));
+        assert_eq!(app.query_vals.get("q").map(String::as_str), Some("search"));
+        assert_eq!(
+            app.extra_query_params,
+            vec![("page".into(), "2".into())]
+        );
+        assert_eq!(
+            app.method_detail_headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                .map(|(_, v)| v.as_str()),
+            Some("application/xml")
+        );
+        assert_eq!(
+            app.extra_request_headers,
+            vec![("X-Trace-Id".into(), "trace-1".into())]
+        );
+        assert_eq!(
+            app.header_vals.get("X-Tenant").map(String::as_str),
+            Some("tenant-a")
+        );
+        assert_eq!(app.cookie_vals.get("sid").map(String::as_str), Some("cookie-a"));
+        assert_eq!(app.body_draft, "{\"name\":\"alice\"}");
+    }
+
+    #[test]
+    fn selecting_module_digit_closes_transient_panels_and_editor() {
+        let mut api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.post".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "POST".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+        api.body_binding = Some(req_param("body", ParamLocation::Body, true));
+
+        let mut app = make_app_with_api(api);
+        app.hosts_panel_open = true;
+        app.hosts_edit_line = true;
+        app.headers_panel_open = true;
+        app.headers_edit_line = true;
+        app.search_focus = true;
+        app.request_editor_open = true;
+        app.body_buf = "{\"name\":\"alice\"}".into();
+        app.request_editor_focus = app.request_sheet_row_count().saturating_sub(1);
+
+        assert!(app.select_main_module_digit('4'));
+
+        assert!(!app.hosts_panel_open);
+        assert!(!app.hosts_edit_line);
+        assert!(!app.headers_panel_open);
+        assert!(!app.headers_edit_line);
+        assert!(!app.search_focus);
+        assert!(!app.request_editor_open);
+        assert_eq!(app.body_draft, "{\"name\":\"alice\"}");
+        assert_eq!(app.main_panel, MainPanel::Detail);
+        assert_eq!(app.detail_pane, DetailPane::Params);
+    }
+
+    #[test]
+    fn sync_detail_keeps_request_editor_open_when_selection_is_unchanged() {
+        let mut api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.post".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "POST".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+        api.body_binding = Some(req_param("body", ParamLocation::Body, true));
+
+        let mut app = App::new(PathBuf::from("."));
+        app.apis = vec![api];
+        app.list_rows = vec![ListRow::Endpoint { api_index: 0 }];
+        app.list_state.select(Some(0));
+        app.sync_detail_from_selection();
+        app.detail_pane = DetailPane::Body;
+        app.open_request_editor_for_detail_pane().unwrap();
+
+        assert!(app.request_editor_open);
+        app.sync_detail_from_selection();
+        assert!(app.request_editor_open);
+        assert!(app.request_editor_is_body_row());
+    }
+
+    #[test]
+    fn edit_detail_auto_selects_first_endpoint_when_none_is_selected() {
+        let api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.get".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "GET".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+
+        let mut app = App::new(PathBuf::from("."));
+        app.apis = vec![api];
+        app.filtered = vec![0];
+        app.collapsed_project_buckets.insert(".".into());
+        app.rebuild_list_rows();
+        app.list_state.select(Some(0));
+        app.main_panel = MainPanel::Detail;
+        app.detail_pane = DetailPane::Params;
+
+        assert!(app.edit_current_module().is_ok());
+        assert!(app.current_api.is_some());
+        assert!(app.request_editor_open);
+        assert!(app.status_msg.contains("已自动展开并选中首个接口"));
+    }
+
+    #[test]
+    fn persist_current_request_draft_saves_current_api_state_into_cache() {
+        let mut api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.post".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "POST".into(),
+            "/demo".into(),
+            ".".into(),
+        );
+        api.path_params
+            .push(req_param("id", ParamLocation::Path, true));
+        api.body_binding = Some(req_param("body", ParamLocation::Body, true));
+
+        let mut app = make_app_with_api(api);
+        app.path_vals.insert("id".into(), "99".into());
+        app.body_draft = "{\"name\":\"persisted\"}".into();
+
+        app.persist_current_request_draft();
+
+        let draft = app
+            .request_drafts
+            .get(&app.current_api.as_ref().unwrap().request_draft_key())
+            .expect("draft should exist");
+        assert_eq!(draft.path_vals.get("id").map(String::as_str), Some("99"));
+        assert_eq!(draft.body_draft, "{\"name\":\"persisted\"}");
+    }
+
+    #[test]
+    fn prepare_request_for_send_builds_url_headers_and_body() {
+        let mut api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.post".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "POST".into(),
+            "/demo/{id}".into(),
+            ".".into(),
+        );
+        api.path_params
+            .push(req_param("id", ParamLocation::Path, true));
+        api.query_params
+            .push(req_param("q", ParamLocation::Query, false));
+        api.body_binding = Some(req_param("body", ParamLocation::Body, true));
+
+        let mut app = make_app_with_api(api);
+        app.path_vals.insert("id".into(), "42".into());
+        app.query_vals.insert("q".into(), "abc".into());
+        app.body_draft = "{\"ok\":true}".into();
+        app.request_headers.push(HeaderEntry {
+            name: "Authorization".into(),
+            value: "Bearer token".into(),
+            description: None,
+        });
+
+        let (method, url, headers, body) = app.prepare_request_for_send().unwrap();
+
+        assert_eq!(method, "POST");
+        assert_eq!(url, format!("{}/demo/42?q=abc", app.active_base_url()));
+        assert_eq!(body.as_deref(), Some("{\"ok\":true}"));
+        assert!(headers
+            .iter()
+            .any(|(k, v)| k == "Authorization" && v == "Bearer token"));
+    }
+
+    #[test]
+    fn prepare_request_for_send_blocks_missing_required_values() {
+        let mut api = LocalApi::new_stub(
+            "1".into(),
+            "Demo.post".into(),
+            "DemoController".into(),
+            "Demo.java".into(),
+            1,
+            "POST".into(),
+            "/demo/{id}".into(),
+            ".".into(),
+        );
+        api.path_params
+            .push(req_param("id", ParamLocation::Path, true));
+
+        let mut app = make_app_with_api(api);
+        app.path_vals.insert("id".into(), String::new());
+
+        assert!(app.prepare_request_for_send().is_err());
+    }
+
+    #[test]
+    fn response_json_lines_show_only_first_level_by_default() {
+        let mut app = App::new(PathBuf::from("."));
+        app.set_last_http_response(HttpResult {
+            status: 200,
+            elapsed_ms: 12,
+            headers_text: "content-type: application/json".into(),
+            body: "{\"user\":{\"name\":\"alice\"},\"ok\":true}".into(),
+        });
+
+        let lines = app.response_json_lines();
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].label, "ok: true");
+        assert_eq!(lines[1].label, "user: {1 项}");
+        assert!(lines[1].expandable);
+        assert!(!lines[1].expanded);
+    }
+
+    #[test]
+    fn response_json_toggle_expands_selected_node() {
+        let mut app = App::new(PathBuf::from("."));
+        app.set_last_http_response(HttpResult {
+            status: 200,
+            elapsed_ms: 12,
+            headers_text: "content-type: application/json".into(),
+            body: "{\"user\":{\"name\":\"alice\"},\"ok\":true}".into(),
+        });
+        app.response_focus = 1;
+
+        assert!(app.toggle_response_node_at_focus());
+        let lines = app.response_json_lines();
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[2].label, "name: \"alice\"");
+    }
+
+    #[test]
+    fn ensure_response_focus_visible_scrolls_with_keyboard_focus() {
+        let mut app = App::new(PathBuf::from("."));
+        app.set_last_http_response(HttpResult {
+            status: 200,
+            elapsed_ms: 12,
+            headers_text: String::new(),
+            body: "{\"a\":1,\"b\":2,\"c\":3,\"d\":4}".into(),
+        });
+
+        app.move_response_focus(3);
+        app.ensure_response_focus_visible(3);
+
+        assert_eq!(app.response_focus, 3);
+        assert_eq!(app.response_scroll, 3);
+    }
+
 }

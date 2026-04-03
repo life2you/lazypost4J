@@ -28,19 +28,15 @@ fn main() -> anyhow::Result<()> {
                 println!("项目: {}", project.display());
                 println!("接口数: {}", report.apis.len());
                 for api in &report.apis {
-                    let bucket_hint = if api.project_bucket != "." && !api.project_bucket.is_empty() {
+                    let bucket_hint = if api.project_bucket != "." && !api.project_bucket.is_empty()
+                    {
                         format!(" [{}]", api.project_bucket)
                     } else {
                         String::new()
                     };
                     println!(
                         "  {:7} {}  —  {}  [{}:{}]{}",
-                        api.http_method,
-                        api.path,
-                        api.name,
-                        api.source_file,
-                        api.line,
-                        bucket_hint
+                        api.http_method, api.path, api.name, api.source_file, api.line, bucket_hint
                     );
                 }
             }

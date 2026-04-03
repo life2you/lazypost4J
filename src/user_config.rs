@@ -1,5 +1,6 @@
 //! 用户配置（域名列表、自定义请求头等），持久化到本机配置目录。
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -43,6 +44,26 @@ pub struct HeaderEntry {
     pub value: String,
     #[serde(default)]
     pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StoredRequestDraft {
+    #[serde(default)]
+    pub path_vals: HashMap<String, String>,
+    #[serde(default)]
+    pub query_vals: HashMap<String, String>,
+    #[serde(default)]
+    pub extra_query_params: Vec<(String, String)>,
+    #[serde(default)]
+    pub method_detail_headers: Vec<(String, String)>,
+    #[serde(default)]
+    pub extra_request_headers: Vec<(String, String)>,
+    #[serde(default)]
+    pub header_vals: HashMap<String, String>,
+    #[serde(default)]
+    pub cookie_vals: HashMap<String, String>,
+    #[serde(default)]
+    pub body_draft: String,
 }
 
 impl HeaderEntry {
@@ -93,6 +114,9 @@ pub struct UserConfig {
     pub auth_header: Option<String>,
     #[serde(default)]
     pub recent_projects: Vec<String>,
+    /// 按项目路径隔离的接口请求草稿：project_key -> stable_api_key -> draft。
+    #[serde(default)]
+    pub request_drafts_by_project: HashMap<String, HashMap<String, StoredRequestDraft>>,
 }
 
 fn default_hosts() -> Vec<HostEntry> {
@@ -122,6 +146,7 @@ impl Default for UserConfig {
             selected_request_header: 0,
             auth_header: None,
             recent_projects: Vec::new(),
+            request_drafts_by_project: HashMap::new(),
         }
     }
 }
@@ -161,6 +186,8 @@ fn normalize(mut c: UserConfig) -> UserConfig {
 
     c.recent_projects.retain(|p| !p.trim().is_empty());
     c.recent_projects.truncate(MAX_RECENT_PROJECTS);
+    c.request_drafts_by_project
+        .retain(|project, _| !project.trim().is_empty());
     c
 }
 
@@ -221,6 +248,7 @@ pub fn load() -> anyhow::Result<UserConfig> {
             selected_request_header: 0,
             auth_header: leg.auth_header,
             recent_projects: Vec::new(),
+            request_drafts_by_project: HashMap::new(),
         };
         return Ok(normalize(c));
     }

@@ -7,6 +7,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
 use reqwest::Url;
 
 /// 发送 HTTP 请求并返回展示用结果。
+#[allow(dead_code)]
 pub fn send_http(
     method: &str,
     full_url: &str,
@@ -14,8 +15,7 @@ pub fn send_http(
     body: Option<&str>,
     timeout_secs: u64,
 ) -> Result<HttpResult, String> {
-    let _ =
-        Url::parse(full_url).map_err(|e| format!("URL 无效: {full_url} — {e}"))?;
+    let _ = Url::parse(full_url).map_err(|e| format!("URL 无效: {full_url} — {e}"))?;
 
     let m = method.trim().to_uppercase();
     if m == "ALL" {
@@ -29,8 +29,7 @@ pub fn send_http(
     for (k, v) in extra_headers {
         let name =
             HeaderName::from_bytes(k.as_bytes()).map_err(|e| format!("非法 Header 名: {e}"))?;
-        let val =
-            HeaderValue::from_str(v).map_err(|e| format!("非法 Header 值 ({k}): {e}"))?;
+        let val = HeaderValue::from_str(v).map_err(|e| format!("非法 Header 值 ({k}): {e}"))?;
         headers.insert(name, val);
     }
 
@@ -41,9 +40,7 @@ pub fn send_http(
 
     let mut req = client.request(method_inner, full_url).headers(headers);
 
-    let send_body = body
-        .map(|b| !b.trim().is_empty())
-        .unwrap_or(false)
+    let send_body = body.map(|b| !b.trim().is_empty()).unwrap_or(false)
         && matches!(m.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
 
     if send_body {
@@ -63,13 +60,7 @@ pub fn send_http(
     let header_lines: Vec<String> = resp
         .headers()
         .iter()
-        .map(|(k, v)| {
-            format!(
-                "{}: {}",
-                k,
-                v.to_str().unwrap_or("<binary>")
-            )
-        })
+        .map(|(k, v)| format!("{}: {}", k, v.to_str().unwrap_or("<binary>")))
         .collect();
     let body_bytes = resp.bytes().map_err(|e| e.to_string())?;
     let body_text = String::from_utf8_lossy(&body_bytes).into_owned();
@@ -82,6 +73,7 @@ pub fn send_http(
     })
 }
 
+#[allow(dead_code)]
 fn stripped_method_bytes(m: &str) -> &[u8] {
     m.trim().as_bytes()
 }

@@ -35,10 +35,7 @@ pub fn line_col_at(s: &str, cursor: usize) -> (usize, usize) {
         }
     }
     if let Some(&(lo, hi)) = ranges.last() {
-        return (
-            ranges.len().saturating_sub(1),
-            hi.saturating_sub(lo),
-        );
+        return (ranges.len().saturating_sub(1), hi.saturating_sub(lo));
     }
     (0, 0)
 }

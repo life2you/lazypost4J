@@ -32,6 +32,12 @@ fn refresh_rows(current: &PathBuf, rows: &mut Vec<PathBuf>, has_parent: &mut boo
         let mut dirs: Vec<PathBuf> = rd
             .filter_map(|e| e.ok())
             .filter(|e| e.path().is_dir())
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .map(|name| !name.starts_with('.'))
+                    .unwrap_or(true)
+            })
             .map(|e| e.path())
             .collect();
         dirs.sort();
@@ -51,6 +57,43 @@ fn row_label(rows: &[PathBuf], has_parent: bool, idx: usize) -> String {
         .and_then(|s| s.to_str())
         .map(|s| format!("{s}/"))
         .unwrap_or_else(|| "?".to_string())
+}
+
+fn enter_selected_dir(
+    cwd: &mut PathBuf,
+    rows: &[PathBuf],
+    has_parent: bool,
+    selected: Option<usize>,
+) -> bool {
+    let Some(i) = selected else {
+        return false;
+    };
+    if i >= rows.len() {
+        return false;
+    }
+    if has_parent && i == 0 {
+        if let Some(p) = cwd.parent() {
+            if p != cwd.as_path() {
+                *cwd = p.to_path_buf();
+                return true;
+            }
+        }
+        return false;
+    }
+    *cwd = rows[i].clone();
+    true
+}
+
+fn selected_project_dir(
+    rows: &[PathBuf],
+    has_parent: bool,
+    selected: Option<usize>,
+) -> Option<PathBuf> {
+    let i = selected?;
+    if i >= rows.len() || (has_parent && i == 0) {
+        return None;
+    }
+    Some(rows[i].clone())
 }
 
 /// 单行展示路径，过长则省略中间。
@@ -170,8 +213,8 @@ pub fn pick_project_dir() -> anyhow::Result<Option<PathBuf>> {
                 (chunks[1], chunks[2], chunks[3])
             };
 
-            let path_para = Paragraph::new(cwd.display().to_string())
-                .style(Style::default().fg(Color::Yellow));
+            let path_para =
+                Paragraph::new(cwd.display().to_string()).style(Style::default().fg(Color::Yellow));
             f.render_widget(path_para, path_chunk);
 
             let dir_block = Block::default().borders(Borders::ALL).title({
@@ -206,11 +249,11 @@ pub fn pick_project_dir() -> anyhow::Result<Option<PathBuf>> {
             f.render_stateful_widget(list, din, &mut dir_state);
 
             let hint = if recent.is_empty() {
-                "↑/↓ j/k 移动 · ←/h/Backspace 后退 · →/l 前进 · 空格或Enter 确认 · Esc/q 取消"
+                "↑/↓ j/k 移动 · Enter 进入/返回 · 空格 选择目录 · ←/h/Backspace 后退 · →/l 前进 · Esc/q 取消"
             } else if focus_recent {
-                "↑/↓ 移动 · 空格或Enter 打开 · x/Delete 从历史移除 · Tab 浏览磁盘 · Esc 取消"
+                "↑/↓ 移动 · 空格或Enter 打开 · -/x/Delete 删除 · Tab 浏览磁盘 · Esc 取消"
             } else {
-                "↑/↓ j/k · ←/h 后退 · →/l 前进 · 空格或Enter 确认当前目录 · Tab 最近项目 · Esc 取消"
+                "↑/↓ j/k · Enter 进入/返回 · 空格 选择目录 · ←/h 后退 · →/l 前进 · Tab 最近项目 · Esc 取消"
             };
             f.render_widget(
                 Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
@@ -232,7 +275,7 @@ pub fn pick_project_dir() -> anyhow::Result<Option<PathBuf>> {
                 KeyCode::Tab if !recent.is_empty() => {
                     focus_recent = !focus_recent;
                 }
-                KeyCode::Char(' ') | KeyCode::Enter => {
+                KeyCode::Enter => {
                     if focus_recent && !recent.is_empty() {
                         if let Some(i) = recent_state.selected() {
                             if i < recent.len() {
@@ -246,12 +289,22 @@ pub fn pick_project_dir() -> anyhow::Result<Option<PathBuf>> {
                             }
                         }
                     } else {
-                        let chosen = std::fs::canonicalize(&cwd)
-                            .with_context(|| format!("无法解析路径: {}", cwd.display()))?;
+                        if enter_selected_dir(&mut cwd, &rows, has_parent, dir_state.selected()) {
+                            refresh_rows(&cwd, &mut rows, &mut has_parent);
+                            dir_state.select(if rows.is_empty() { None } else { Some(0) });
+                        }
+                    }
+                }
+                KeyCode::Char(' ') if !focus_recent || recent.is_empty() => {
+                    if let Some(p) = selected_project_dir(&rows, has_parent, dir_state.selected()) {
+                        let chosen = std::fs::canonicalize(&p)
+                            .with_context(|| format!("无法解析路径: {}", p.display()))?;
                         return Ok(Some(chosen));
                     }
                 }
-                KeyCode::Char('x') | KeyCode::Delete if focus_recent && !recent.is_empty() => {
+                KeyCode::Char('-') | KeyCode::Char('x') | KeyCode::Delete
+                    if focus_recent && !recent.is_empty() =>
+                {
                     if let Some(i) = recent_state.selected() {
                         if i < recent.len() {
                             recent.remove(i);
@@ -292,11 +345,7 @@ pub fn pick_project_dir() -> anyhow::Result<Option<PathBuf>> {
                         if i < rows.len() {
                             cwd = rows[i].clone();
                             refresh_rows(&cwd, &mut rows, &mut has_parent);
-                            dir_state.select(if rows.is_empty() {
-                                None
-                            } else {
-                                Some(0)
-                            });
+                            dir_state.select(if rows.is_empty() { None } else { Some(0) });
                         }
                     }
                 }
@@ -307,16 +356,37 @@ pub fn pick_project_dir() -> anyhow::Result<Option<PathBuf>> {
                         if p != cwd.as_path() {
                             cwd = p.to_path_buf();
                             refresh_rows(&cwd, &mut rows, &mut has_parent);
-                            dir_state.select(if rows.is_empty() {
-                                None
-                            } else {
-                                Some(0)
-                            });
+                            dir_state.select(if rows.is_empty() { None } else { Some(0) });
                         }
                     }
                 }
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enter_on_parent_row_goes_up_one_level() {
+        let mut cwd = PathBuf::from("/tmp/demo/child");
+        let rows = vec![PathBuf::from("/tmp/demo")];
+
+        let changed = enter_selected_dir(&mut cwd, &rows, true, Some(0));
+
+        assert!(changed);
+        assert_eq!(cwd, PathBuf::from("/tmp/demo"));
+    }
+
+    #[test]
+    fn selecting_parent_row_with_space_returns_none() {
+        let rows = vec![PathBuf::from("/tmp/demo")];
+
+        let selected = selected_project_dir(&rows, true, Some(0));
+
+        assert!(selected.is_none());
     }
 }

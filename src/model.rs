@@ -75,7 +75,10 @@ impl LocalApi {
     /// 分组列表类标题：优先类注释 / OpenAPI 标签中含中日韩表意文字的文案，否则为 `module`（Java 类名）。
     pub fn module_group_label(&self) -> String {
         first_cjk_preferred_label(
-            self.class_doc.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            self.class_doc
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
             self.openapi_tag
                 .as_deref()
                 .map(str::trim)
@@ -117,6 +120,24 @@ impl LocalApi {
             metadata: serde_json::Map::new(),
         }
     }
+
+    /// 用于持久化请求草稿的稳定 key；避免源码行号变化导致草稿失效。
+    pub fn request_draft_key(&self) -> String {
+        let sig = format!(
+            "v2\n{}\n{}\n{}\n{}\n{}",
+            self.http_method, self.path, self.module, self.name, self.source_file
+        );
+        format!("v2:{:016x}", fnv1a64(sig.as_bytes()))
+    }
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 #[allow(clippy::ptr_arg)]

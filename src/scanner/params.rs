@@ -217,7 +217,8 @@ fn java_type_to_json_inner(
         return java_type_to_json_inner(inner, depth + 1, catalog);
     }
 
-    if strip_wrapped_generic(&t, "List<").is_some() || strip_wrapped_generic(&t, "java.util.List<").is_some()
+    if strip_wrapped_generic(&t, "List<").is_some()
+        || strip_wrapped_generic(&t, "java.util.List<").is_some()
     {
         return Some(serde_json::Value::Array(vec![]));
     }
@@ -323,7 +324,10 @@ mod tests {
         let mut cat = FieldCatalog::new();
         cat.insert(
             "UserDto".into(),
-            vec![("id".into(), "long".into()), ("name".into(), "String".into())],
+            vec![
+                ("id".into(), "long".into()),
+                ("name".into(), "String".into()),
+            ],
         );
         let v = java_type_to_json_template("UserDto", &cat);
         assert_eq!(v, serde_json::json!({"id": null, "name": null}));

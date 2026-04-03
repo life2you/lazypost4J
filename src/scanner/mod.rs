@@ -3,8 +3,8 @@
 mod class_fields;
 mod javadoc;
 mod lazy_body;
-mod parse;
 mod params;
+mod parse;
 mod source_index;
 mod spring;
 mod swagger_openapi;
@@ -22,9 +22,9 @@ use walkdir::WalkDir;
 
 use crate::model::LocalApi;
 
-use parse::{modifier_annotations, modifiers_node};
-use params::extract_method_parameters;
 use class_fields::{collect_field_catalog, FieldCatalog};
+use params::extract_method_parameters;
+use parse::{modifier_annotations, modifiers_node};
 use spring::{
     class_level_request_mapping_path, is_controller_class, join_spring_paths,
     mapping_from_method_annotations, source_might_contain_spring_web_controller,
@@ -289,9 +289,7 @@ fn process_class_declaration(
         return;
     };
     let mods = modifiers_node(class);
-    let class_anns = mods
-        .map(|m| modifier_annotations(m))
-        .unwrap_or_default();
+    let class_anns = mods.map(|m| modifier_annotations(m)).unwrap_or_default();
     if !is_controller_class(&class_anns, source) {
         return;
     }
@@ -337,9 +335,7 @@ fn process_controller_method(
     body_policy: BodyTemplatePolicy,
 ) {
     let mods = modifiers_node(method);
-    let method_anns = mods
-        .map(|m| modifier_annotations(m))
-        .unwrap_or_default();
+    let method_anns = mods.map(|m| modifier_annotations(m)).unwrap_or_default();
     let Some(mapping) = mapping_from_method_annotations(&method_anns, source) else {
         return;
     };
@@ -377,7 +373,11 @@ fn process_controller_method(
     api.openapi_tag = class.openapi_tag.clone();
 
     let jdoc = std::str::from_utf8(source).ok().and_then(|s| {
-        javadoc::method_javadoc_summary_in_range(s, method.start_byte(), class.class_body_start_byte)
+        javadoc::method_javadoc_summary_in_range(
+            s,
+            method.start_byte(),
+            class.class_body_start_byte,
+        )
     });
     let op_sum = swagger_openapi::method_operation_summary(method, source);
     api.description = jdoc
@@ -408,11 +408,7 @@ mod tests {
     fn fixture_demo_controller() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/spring_mvc");
         let r = scan_project(&root);
-        assert!(
-            r.file_errors.is_empty(),
-            "errors: {:?}",
-            r.file_errors
-        );
+        assert!(r.file_errors.is_empty(), "errors: {:?}", r.file_errors);
         let paths: Vec<_> = r
             .apis
             .iter()
@@ -430,10 +426,7 @@ mod tests {
         assert_eq!(get.path_params[0].name, "id");
         assert_eq!(get.query_params.len(), 1);
         assert_eq!(get.query_params[0].name, "q");
-        assert_eq!(
-            get.query_params[0].default_value.as_deref(),
-            Some("all")
-        );
+        assert_eq!(get.query_params[0].default_value.as_deref(), Some("all"));
         assert!(!get.query_params[0].required);
 
         let post = r
@@ -449,11 +442,19 @@ mod tests {
         assert_eq!(post.body_binding.as_ref().unwrap().name, "body");
         assert_eq!(post.body_binding.as_ref().unwrap().java_type, "EchoBody");
 
-        let hello = r.apis.iter().find(|a| a.path == "/api/v1/demo/hello/{id}").unwrap();
+        let hello = r
+            .apis
+            .iter()
+            .find(|a| a.path == "/api/v1/demo/hello/{id}")
+            .unwrap();
         assert_eq!(hello.project_bucket, "src");
         assert!(hello.description.as_deref().unwrap_or("").contains("问候"));
 
-        let echo = r.apis.iter().find(|a| a.path == "/api/v1/demo/echo").unwrap();
+        let echo = r
+            .apis
+            .iter()
+            .find(|a| a.path == "/api/v1/demo/echo")
+            .unwrap();
         assert!(echo.description.as_deref().unwrap_or("").contains("JSON"));
     }
 

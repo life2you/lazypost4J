@@ -69,11 +69,7 @@ fn last_javadoc_block_before(source: &str, method_byte: usize) -> Option<&str> {
 
 fn javadoc_lines(block: &str) -> Vec<String> {
     let inner = match block.trim().strip_prefix("/**") {
-        Some(b) => b
-            .split("*/")
-            .next()
-            .unwrap_or("")
-            .trim(),
+        Some(b) => b.split("*/").next().unwrap_or("").trim(),
         None => return Vec::new(),
     };
     inner
@@ -133,6 +129,9 @@ class FinPaymentBillController {
             method_javadoc_summary_in_range(src, list_pos, body_start).as_deref(),
             None
         );
-        assert_eq!(method_javadoc_summary(src, list_pos).as_deref(), Some("付款单"));
+        assert_eq!(
+            method_javadoc_summary(src, list_pos).as_deref(),
+            Some("付款单")
+        );
     }
 }
