@@ -85,6 +85,7 @@ lazypost scan /path/to/java-project --json
 
 - 开发说明：[DEVELOPMENT.md](./DEVELOPMENT.md)
 - 产品 / 设计草稿：[api_tui_v_1_prd_and_srd.md](./api_tui_v_1_prd_and_srd.md)
+- Homebrew 发版流程：[HOMEBREW_RELEASE.md](./HOMEBREW_RELEASE.md)
 
 ## License
 
