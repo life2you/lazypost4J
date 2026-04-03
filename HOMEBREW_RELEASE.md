@@ -39,36 +39,35 @@ git tag -a v0.1.1 -m "v0.1.1"
 git push origin v0.1.1
 ```
 
-### 4. 计算源码包 SHA256
+### 4. 更新 Homebrew formula
+
+推荐直接使用仓库里的脚本：
 
 ```bash
-curl -L https://github.com/life2you/lazypost4J/archive/refs/tags/v0.1.1.tar.gz -o /tmp/lazypost-v0.1.1.tar.gz
-shasum -a 256 /tmp/lazypost-v0.1.1.tar.gz
+scripts/update_homebrew_formula.sh v0.1.1
 ```
 
-### 5. 更新 tap 仓库 formula
+脚本会自动：
 
-编辑 `homebrew-lazypost4j/Formula/lazypost.rb`：
+- 下载新 tag 的源码包
+- 计算 `sha256`
+- 更新 `homebrew-lazypost4j/Formula/lazypost.rb` 中的 `url` 和 `sha256`
 
-- 把 `url` 改成新的 tag
-- 把 `sha256` 改成上一步输出
-
-示例：
-
-```ruby
-url "https://github.com/life2you/lazypost4J/archive/refs/tags/v0.1.1.tar.gz"
-sha256 "替换为新的 SHA256"
-```
-
-### 6. 提交并推送 tap 仓库
+如果 tap 仓库不在默认路径，可传环境变量：
 
 ```bash
-git -C /path/to/homebrew-lazypost4j add Formula/lazypost.rb README.md
+TAP_REPO_PATH=/path/to/homebrew-lazypost4j scripts/update_homebrew_formula.sh v0.1.1
+```
+
+### 5. 提交并推送 tap 仓库
+
+```bash
+git -C /path/to/homebrew-lazypost4j add Formula/lazypost.rb
 git -C /path/to/homebrew-lazypost4j commit -m "Update lazypost to v0.1.1"
 git -C /path/to/homebrew-lazypost4j push origin main
 ```
 
-### 7. 本地验证
+### 6. 本地验证
 
 ```bash
 brew update
@@ -91,12 +90,10 @@ brew tap | grep lazypost4j
 brew info life2you/lazypost4j/lazypost
 ```
 
-## 版本更新模板
+## 一键更新示例
 
-把下面内容里的版本号整体替换后执行：
+标准目录结构下：
 
 ```bash
-VERSION=v0.1.1
-curl -L "https://github.com/life2you/lazypost4J/archive/refs/tags/${VERSION}.tar.gz" -o "/tmp/lazypost-${VERSION}.tar.gz"
-shasum -a 256 "/tmp/lazypost-${VERSION}.tar.gz"
+scripts/update_homebrew_formula.sh v0.1.1
 ```
