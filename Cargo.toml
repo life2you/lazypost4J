@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.74"
 description = "Spring MVC/Boot API scanner and debugger TUI (macOS/Linux)"
 license = "MIT OR Apache-2.0"
-readme = "DEVELOPMENT.md"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1.0"
